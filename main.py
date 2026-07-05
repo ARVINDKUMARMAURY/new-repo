@@ -66,6 +66,7 @@ async def start_playback(chat_id: int, song: dict):
         return await play_next(chat_id)
 
     await call_py.play(chat_id, MediaStream(local_path))
+    q.set_current(chat_id, song)
     await bot.send_message(
         chat_id,
         f"▶️ Ab baj raha hai: **{song['title']}**\nRequested by: {song['requested_by']}",
@@ -81,6 +82,7 @@ async def play_next(chat_id: int):
     if next_song:
         await start_playback(chat_id, next_song)
     else:
+        q.clear_current(chat_id)
         try:
             await call_py.leave_call(chat_id)
         except Exception:
@@ -187,6 +189,7 @@ async def stop_cmd(_, message: Message):
     if not await is_authorized(message.chat.id, message.from_user.id):
         return await message.reply_text("❌ Sirf admins/authorized users hi ye kar sakte hain.")
     q.clear_queue(message.chat.id)
+    q.clear_current(message.chat.id)
     try:
         await call_py.leave_call(message.chat.id)
     except Exception:
