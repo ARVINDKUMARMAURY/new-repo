@@ -2,7 +2,7 @@ import asyncio
 from datetime import datetime
 
 from pyrogram import Client, filters
-from pyrogram.types import Message
+from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
 from pyrogram.enums import ChatMemberStatus
 from pyrogram.errors import UserNotParticipant, UserAlreadyParticipant, FloodWait, UserBannedInChannel
 from pytgcalls import PyTgCalls, filters as call_filters
@@ -164,6 +164,14 @@ async def stream_end_handler(_, update):
 @bot.on_message(filters.command("start"))
 async def start_cmd(_, message: Message):
     await track_served(message)
+    buttons = InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton("👨‍💻 Developer", url="https://t.me/Avisha_Asstiant"),
+                InlineKeyboardButton("💬 Support", url="https://t.me/Avisha_101"),
+            ]
+        ]
+    )
     await message.reply_text(
         "Hi! I'm a simple music bot.\n\n"
         "/play <song name> - play a song\n"
@@ -171,7 +179,10 @@ async def start_cmd(_, message: Message):
         "/pause /resume /skip /stop /end\n"
         "/queue - view queue\n"
         "/shuffle - shuffle the queue\n"
-        "/authuser - grant/revoke permission (reply to a user)"
+        "/authuser - grant/revoke permission (reply to a user)\n"
+        "/id - get numeric ID (reply or @username)\n"
+        "/vclogger - toggle VC join/leave logging",
+        reply_markup=buttons,
     )
 
 
