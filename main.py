@@ -62,7 +62,7 @@ async def start_playback(chat_id: int, song: dict):
     """Downloads (or fetches from cache) and starts streaming a song."""
     local_path = await YouTube.download(song["vidid"], video=song["video"])
     if not local_path:
-        await bot.send_message(chat_id, f"❌ '{song['title']}' fetch nahi ho paya xBit API se.")
+        await bot.send_message(chat_id, f"❌ '{song['title']}' fetch nahi ho paya.")
         return await play_next(chat_id)
 
     await call_py.play(chat_id, MediaStream(local_path))
