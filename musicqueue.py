@@ -1,9 +1,12 @@
 import random
 from config import QUEUE_LIMIT
 
-# chat_id -> list of song dicts
+# chat_id -> list of song dicts (upcoming, not yet played)
 # song dict = {"title": str, "vidid": str, "duration": str, "requested_by": str, "video": bool}
 _QUEUES = {}
+
+# chat_id -> song dict currently playing (None/absent if nothing playing)
+_CURRENT = {}
 
 
 def get_queue(chat_id: int):
@@ -35,6 +38,7 @@ def pop_next(chat_id: int):
 
 def clear_queue(chat_id: int):
     _QUEUES.pop(chat_id, None)
+    _CURRENT.pop(chat_id, None)
 
 
 def shuffle_queue(chat_id: int) -> bool:
@@ -45,5 +49,18 @@ def shuffle_queue(chat_id: int) -> bool:
     return True
 
 
+def set_current(chat_id: int, song: dict):
+    _CURRENT[chat_id] = song
+
+
+def get_current(chat_id: int):
+    return _CURRENT.get(chat_id)
+
+
+def clear_current(chat_id: int):
+    _CURRENT.pop(chat_id, None)
+
+
 def is_active(chat_id: int) -> bool:
-    return chat_id in _QUEUES and len(_QUEUES[chat_id]) > 0
+    """True if something is currently playing in this chat (VC busy)."""
+    return chat_id in _CURRENT
