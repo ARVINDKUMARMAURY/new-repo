@@ -4,6 +4,7 @@ from datetime import datetime
 from pyrogram import Client, filters
 from pyrogram.types import Message
 from pyrogram.enums import ChatMemberStatus
+from pyrogram.errors import UserNotParticipant, UserAlreadyParticipant, FloodWait, UserBannedInChannel
 from pytgcalls import PyTgCalls, filters as call_filters
 from pytgcalls.types import MediaStream
 
@@ -28,6 +29,9 @@ assistant = Client(
 )
 
 call_py = PyTgCalls(assistant)
+
+ASSISTANT_ID = None  # set at startup after assistant.start()
+ASSISTANT_USERNAME = None  # set at startup after assistant.start()
 
 
 # ===================== Helpers =====================
@@ -58,18 +62,78 @@ async def track_served(message: Message):
         await db.add_served_chat(message.chat.id)
 
 
+async def ensure_assistant_in_chat(chat_id: int) -> bool:
+    """Checks if the assistant is already in the group; if not, joins via invite link.
+    If the assistant is banned, notifies the group with its username."""
+    try:
+        member = await bot.get_chat_member(chat_id, ASSISTANT_ID)
+        if member.status == ChatMemberStatus.BANNED:
+            await bot.send_message(
+                chat_id,
+                f"❌ My assistant (@{ASSISTANT_USERNAME}) is banned from this group. "
+                f"Please unban @{ASSISTANT_USERNAME}, then play the song again.",
+            )
+            return False
+        if member.status in (
+            ChatMemberStatus.MEMBER,
+            ChatMemberStatus.ADMINISTRATOR,
+            ChatMemberStatus.OWNER,
+        ):
+            return True
+        # status LEFT or RESTRICTED -> fall through and try to join
+    except UserNotParticipant:
+        pass
+    except Exception:
+        pass
+
+    try:
+        invite_link = await bot.export_chat_invite_link(chat_id)
+    except Exception as e:
+        await bot.send_message(
+            chat_id,
+            "❌ I need the **'Invite Users via Link'** permission so I can add my assistant "
+            "to this group. Please make me admin with this permission, then play the song again.",
+        )
+        await log(f"⚠️ Couldn't create invite link for `{chat_id}` (missing permission): {e}")
+        return False
+
+    try:
+        await assistant.join_chat(invite_link)
+        await log(f"✅ Assistant joined chat `{chat_id}` via invite link.")
+        return True
+    except UserAlreadyParticipant:
+        return True
+    except UserBannedInChannel:
+        await bot.send_message(
+            chat_id,
+            f"❌ My assistant (@{ASSISTANT_USERNAME}) is banned from this group. "
+            f"Please unban @{ASSISTANT_USERNAME}, then play the song again.",
+        )
+        return False
+    except FloodWait as e:
+        await log(f"⚠️ FloodWait while joining `{chat_id}`: wait {e.value}s")
+        return False
+    except Exception as e:
+        await log(f"⚠️ Assistant couldn't join chat `{chat_id}`: {e}")
+        return False
+
+
 async def start_playback(chat_id: int, song: dict):
     """Downloads (or fetches from cache) and starts streaming a song."""
+    joined = await ensure_assistant_in_chat(chat_id)
+    if not joined:
+        return
+
     local_path = await YouTube.download(song["vidid"], video=song["video"])
     if not local_path:
-        await bot.send_message(chat_id, f"❌ '{song['title']}' fetch nahi ho paya.")
+        await bot.send_message(chat_id, f"❌ Couldn't fetch '{song['title']}' from xBit API.")
         return await play_next(chat_id)
 
     await call_py.play(chat_id, MediaStream(local_path))
     q.set_current(chat_id, song)
     await bot.send_message(
         chat_id,
-        f"▶️ Ab baj raha hai: **{song['title']}**\nRequested by: {song['requested_by']}",
+        f"▶️ Now playing: **{song['title']}**\nRequested by: {song['requested_by']}",
     )
     await log(
         f"🎵 Song played\nChat: `{chat_id}`\nTitle: {song['title']}\n"
@@ -100,13 +164,13 @@ async def stream_end_handler(_, update):
 async def start_cmd(_, message: Message):
     await track_served(message)
     await message.reply_text(
-        "Namaste! Main ek simple music bot hoon.\n\n"
-        "/play <song name> - gaana bajao\n"
-        "/vplay <song name> - video bajao\n"
+        "Hi! I'm a simple music bot.\n\n"
+        "/play <song name> - play a song\n"
+        "/vplay <song name> - play a video\n"
         "/pause /resume /skip /stop /end\n"
-        "/queue - queue dekho\n"
-        "/shuffle - queue shuffle karo\n"
-        "/authuser - permission do/hatao (reply karke)"
+        "/queue - view queue\n"
+        "/shuffle - shuffle the queue\n"
+        "/authuser - grant/revoke permission (reply to a user)"
     )
 
 
@@ -115,18 +179,18 @@ async def _play_handler(_, message: Message, video: bool):
     chat_id = message.chat.id
 
     if len(message.command) < 2:
-        return await message.reply_text("Gaana ka naam ya link do. Example: `/play tum hi ho`")
+        return await message.reply_text("Give me a song name or link. Example: `/play tum hi ho`")
 
     query = message.text.split(None, 1)[1]
-    searching = await message.reply_text("🔎 Dhoondh raha hoon...")
+    searching = await message.reply_text("🔎 Searching...")
 
     details, vidid = await YouTube.track(query, videoid=False)
     if not vidid:
-        return await searching.edit_text("❌ Kuch nahi mila is naam se.")
+        return await searching.edit_text("❌ Nothing found for that.")
 
     if details["duration_sec"] and details["duration_sec"] > config.DURATION_LIMIT:
         return await searching.edit_text(
-            f"❌ Ye gaana bahut lamba hai ({details['duration_min']}). "
+            f"❌ This song is too long ({details['duration_min']}). "
             f"Max allowed: {config.DURATION_LIMIT // 60} min."
         )
 
@@ -141,8 +205,8 @@ async def _play_handler(_, message: Message, video: bool):
     if q.is_active(chat_id):
         added = q.add_to_queue(chat_id, song)
         if not added:
-            return await searching.edit_text(f"❌ Queue full hai (max {config.QUEUE_LIMIT}).")
-        await searching.edit_text(f"✅ Queue me add ho gaya: **{song['title']}**")
+            return await searching.edit_text(f"❌ Queue is full (max {config.QUEUE_LIMIT}).")
+        await searching.edit_text(f"✅ Added to queue: **{song['title']}**")
         try:
             await message.delete()
         except Exception:
@@ -172,7 +236,7 @@ async def vplay_cmd(client, message: Message):
 @bot.on_message(filters.command("pause"))
 async def pause_cmd(_, message: Message):
     if not await is_authorized(message.chat.id, message.from_user.id):
-        return await message.reply_text("❌ Sirf admins/authorized users hi ye kar sakte hain.")
+        return await message.reply_text("❌ Only admins/authorized users can do this.")
     await call_py.pause(message.chat.id)
     await message.reply_text("⏸ Paused.")
 
@@ -180,7 +244,7 @@ async def pause_cmd(_, message: Message):
 @bot.on_message(filters.command("resume"))
 async def resume_cmd(_, message: Message):
     if not await is_authorized(message.chat.id, message.from_user.id):
-        return await message.reply_text("❌ Sirf admins/authorized users hi ye kar sakte hain.")
+        return await message.reply_text("❌ Only admins/authorized users can do this.")
     await call_py.resume(message.chat.id)
     await message.reply_text("▶️ Resumed.")
 
@@ -188,8 +252,8 @@ async def resume_cmd(_, message: Message):
 @bot.on_message(filters.command("skip"))
 async def skip_cmd(_, message: Message):
     if not await is_authorized(message.chat.id, message.from_user.id):
-        return await message.reply_text("❌ Sirf admins/authorized users hi ye kar sakte hain.")
-    await message.reply_text("⏭ Skip kiya.")
+        return await message.reply_text("❌ Only admins/authorized users can do this.")
+    await message.reply_text("⏭ Skipped.")
     await play_next(message.chat.id)
     try:
         await message.delete()
@@ -200,14 +264,14 @@ async def skip_cmd(_, message: Message):
 @bot.on_message(filters.command(["stop", "end"]))
 async def stop_cmd(_, message: Message):
     if not await is_authorized(message.chat.id, message.from_user.id):
-        return await message.reply_text("❌ Sirf admins/authorized users hi ye kar sakte hain.")
+        return await message.reply_text("❌ Only admins/authorized users can do this.")
     q.clear_queue(message.chat.id)
     q.clear_current(message.chat.id)
     try:
         await call_py.leave_call(message.chat.id)
     except Exception:
         pass
-    await message.reply_text("⏹ Stopped aur queue clear kar diya.")
+    await message.reply_text("⏹ Stopped and cleared the queue.")
     try:
         await message.delete()
     except Exception:
@@ -218,7 +282,7 @@ async def stop_cmd(_, message: Message):
 async def queue_cmd(_, message: Message):
     songs = q.get_queue(message.chat.id)
     if not songs:
-        return await message.reply_text("Queue khali hai.")
+        return await message.reply_text("Queue is empty.")
     text = "📋 **Queue:**\n\n"
     for i, s in enumerate(songs, 1):
         text += f"{i}. {s['title']} — {s['requested_by']}\n"
@@ -228,18 +292,18 @@ async def queue_cmd(_, message: Message):
 @bot.on_message(filters.command("shuffle"))
 async def shuffle_cmd(_, message: Message):
     if not await is_authorized(message.chat.id, message.from_user.id):
-        return await message.reply_text("❌ Sirf admins/authorized users hi ye kar sakte hain.")
+        return await message.reply_text("❌ Only admins/authorized users can do this.")
     if q.shuffle_queue(message.chat.id):
-        await message.reply_text("🔀 Queue shuffle ho gayi.")
+        await message.reply_text("🔀 Queue shuffled.")
     else:
-        await message.reply_text("Shuffle ke liye queue me kam se kam 2 gaane chahiye.")
+        await message.reply_text("Need at least 2 songs in the queue to shuffle.")
 
 
 @bot.on_message(filters.command("authuser"))
 async def authuser_cmd(_, message: Message):
     chat_id = message.chat.id
     if not await is_authorized(chat_id, message.from_user.id):
-        return await message.reply_text("❌ Sirf admins hi authuser manage kar sakte hain.")
+        return await message.reply_text("❌ Only admins can manage authorized users.")
 
     target = None
     if message.reply_to_message:
@@ -248,30 +312,50 @@ async def authuser_cmd(_, message: Message):
         try:
             target = await bot.get_users(message.command[1])
         except Exception:
-            return await message.reply_text("❌ User nahi mila.")
+            return await message.reply_text("❌ User not found.")
 
     if not target:
-        return await message.reply_text("Kisi member ke message par reply karo, ya `/authuser <user_id>` likho.")
+        return await message.reply_text("Reply to a member's message, or use `/authuser <user_id>`.")
 
     already = await db.is_auth_user(chat_id, target.id)
     if already:
         await db.remove_auth_user(chat_id, target.id)
-        await message.reply_text(f"🚫 {target.mention} ka authuser access hataa diya.")
+        await message.reply_text(f"🚫 Removed {target.mention}'s authorized access.")
     else:
         await db.add_auth_user(chat_id, target.id)
-        await message.reply_text(f"✅ {target.mention} ko authuser bana diya.")
+        await message.reply_text(f"✅ {target.mention} is now an authorized user.")
+
+
+@bot.on_message(filters.command("id"))
+async def id_cmd(_, message: Message):
+    target = None
+
+    if message.reply_to_message:
+        target = message.reply_to_message.from_user
+    elif len(message.command) > 1:
+        query = message.command[1].lstrip("@")
+        try:
+            target = await bot.get_users(query)
+        except Exception:
+            return await message.reply_text("❌ User not found.")
+    else:
+        return await message.reply_text("Reply to a message, or use `/id @username`.")
+
+    await message.reply_text(
+        f"👤 **User Info**\nName: {target.first_name}\nUsername: @{target.username or 'N/A'}\nID: `{target.id}`"
+    )
 
 
 @bot.on_message(filters.command("broadcast") & filters.user(config.OWNER_ID))
 async def broadcast_cmd(_, message: Message):
     if len(message.command) < 2 and not message.reply_to_message:
-        return await message.reply_text("Broadcast karne ke liye text do ya kisi message par reply karke `/broadcast` likho.")
+        return await message.reply_text("Give some text to broadcast, or reply to a message with `/broadcast`.")
 
     sent, failed = 0, 0
     users = await db.get_served_users()
     chats = await db.get_served_chats()
 
-    status = await message.reply_text("📢 Broadcast shuru...")
+    status = await message.reply_text("📢 Starting broadcast...")
 
     for uid in users:
         try:
@@ -301,8 +385,12 @@ async def broadcast_cmd(_, message: Message):
 # ===================== Startup =====================
 
 async def main():
+    global ASSISTANT_ID, ASSISTANT_USERNAME
     await bot.start()
     await assistant.start()
+    me = await assistant.get_me()
+    ASSISTANT_ID = me.id
+    ASSISTANT_USERNAME = me.username
     await call_py.start()
     await log(f"✅ Bot start ho gaya!\nTime: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print("Bot started.")
