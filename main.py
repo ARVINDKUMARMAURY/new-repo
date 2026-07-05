@@ -142,12 +142,21 @@ async def _play_handler(_, message: Message, video: bool):
         added = q.add_to_queue(chat_id, song)
         if not added:
             return await searching.edit_text(f"❌ Queue full hai (max {config.QUEUE_LIMIT}).")
-        return await searching.edit_text(f"✅ Queue me add ho gaya: **{song['title']}**")
+        await searching.edit_text(f"✅ Queue me add ho gaya: **{song['title']}**")
+        try:
+            await message.delete()
+        except Exception:
+            pass
+        return
 
     q.add_to_queue(chat_id, song)
     await searching.delete()
     first_song = q.pop_next(chat_id)
     await start_playback(chat_id, first_song)
+    try:
+        await message.delete()
+    except Exception:
+        pass
 
 
 @bot.on_message(filters.command("play"))
@@ -182,6 +191,10 @@ async def skip_cmd(_, message: Message):
         return await message.reply_text("❌ Sirf admins/authorized users hi ye kar sakte hain.")
     await message.reply_text("⏭ Skip kiya.")
     await play_next(message.chat.id)
+    try:
+        await message.delete()
+    except Exception:
+        pass
 
 
 @bot.on_message(filters.command(["stop", "end"]))
@@ -195,6 +208,10 @@ async def stop_cmd(_, message: Message):
     except Exception:
         pass
     await message.reply_text("⏹ Stopped aur queue clear kar diya.")
+    try:
+        await message.delete()
+    except Exception:
+        pass
 
 
 @bot.on_message(filters.command("queue"))
