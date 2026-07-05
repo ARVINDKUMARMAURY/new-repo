@@ -12,6 +12,7 @@ import config
 import database as db
 import musicqueue as q
 from youtube import YouTube
+from vclogger import setup_vc_logger
 
 # ===================== Clients =====================
 bot = Client(
@@ -392,6 +393,7 @@ async def main():
     ASSISTANT_ID = me.id
     ASSISTANT_USERNAME = me.username
     await call_py.start()
+    setup_vc_logger(bot, assistant, call_py)
     await log(f"✅ Bot start ho gaya!\nTime: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print("Bot started.")
     await asyncio.Event().wait()
