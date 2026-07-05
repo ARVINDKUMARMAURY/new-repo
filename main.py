@@ -181,7 +181,7 @@ async def start_cmd(_, message: Message):
         "/shuffle - shuffle the queue\n"
         "/authuser - grant/revoke permission (reply to a user)\n"
         "/id - get numeric ID (reply or @username)\n"
-        "/vclogger - toggle VC join/leave logging",
+        "/vclogger - toggle VC join leave on/off logging",
         reply_markup=buttons,
     )
 
