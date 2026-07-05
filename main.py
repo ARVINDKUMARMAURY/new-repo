@@ -4,12 +4,12 @@ from datetime import datetime
 from pyrogram import Client, filters
 from pyrogram.types import Message
 from pyrogram.enums import ChatMemberStatus
-from pytgcalls import PyTgCalls
+from pytgcalls import PyTgCalls, filters as call_filters
 from pytgcalls.types import MediaStream
 
 import config
 import database as db
-import queue as q
+import musicqueue as q
 from youtube import YouTube
 
 # ===================== Clients =====================
@@ -87,7 +87,7 @@ async def play_next(chat_id: int):
             pass
 
 
-@call_py.on_stream_end()
+@call_py.on_update(call_filters.stream_end())
 async def stream_end_handler(_, update):
     await play_next(update.chat_id)
 
