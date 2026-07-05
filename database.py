@@ -54,3 +54,18 @@ async def get_auth_users(chat_id: int):
 async def is_auth_user(chat_id: int, user_id: int) -> bool:
     doc = await authuser_col.find_one({"chat_id": chat_id, "users": user_id})
     return doc is not None
+
+
+# ---------------- VC Join/Leave Logger (per-chat toggle) ----------------
+
+async def set_vc_logger(chat_id: int, enabled: bool):
+    await chats_col.update_one(
+        {"chat_id": chat_id},
+        {"$set": {"vc_logger": enabled}},
+        upsert=True,
+    )
+
+
+async def is_vc_logger(chat_id: int) -> bool:
+    doc = await chats_col.find_one({"chat_id": chat_id})
+    return bool(doc and doc.get("vc_logger", False))
