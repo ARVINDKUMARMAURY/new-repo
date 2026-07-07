@@ -22,5 +22,5 @@ XBIT_API_URL = "https://tgapi.xbitcode.com"
 STORAGE_DIR = "/root/vps_songs"
 
 # ===================== Limits =====================
-DURATION_LIMIT = 1200   # seconds, default 20 min
-QUEUE_LIMIT = 20        # max songs per chat queue
+DURATION_LIMIT = 18000   # seconds, default 20 min
+QUEUE_LIMIT = 30        # max songs per chat queue
