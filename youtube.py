@@ -83,6 +83,8 @@ class YouTubeAPI:
         1. Check STORAGE_DIR cache first (instant, no API call).
         2. If missing, fetch stream URL from xBit API only (no yt-dlp).
         3. Download & permanently save under STORAGE_DIR for next time.
+        Stream URLs can be short-lived/one-time-use, so on failure we
+        re-fetch a fresh URL and retry instead of reusing a stale one.
         """
         ext = "mp4" if video else "mp3"
         local_path = os.path.join(STORAGE_DIR, f"{vidid}.{ext}")
@@ -90,11 +92,18 @@ class YouTubeAPI:
         if os.path.exists(local_path) and os.path.getsize(local_path) > 0:
             return local_path
 
-        stream_url = await self._xbit_fetch(vidid, want_video=video)
-        if not stream_url:
-            return None
+        for attempt in range(1, 3):
+            stream_url = await self._xbit_fetch(vidid, want_video=video)
+            if not stream_url:
+                return None
 
-        return await self._save_to_storage(stream_url, local_path)
+            saved_path = await self._save_to_storage(stream_url, local_path)
+            if saved_path:
+                return saved_path
+
+            print(f"[download] Attempt {attempt} failed for {vidid}, retrying with a fresh URL...")
+
+        return None
 
     async def _xbit_fetch(self, vidid: str, want_video: bool = False):
         loop = asyncio.get_running_loop()
@@ -127,7 +136,7 @@ class YouTubeAPI:
         def _dl():
             tmp_path = local_path + ".part"
             try:
-                session = _session()
+                session = requests.Session()  # no retry adapter — avoid re-hitting one-time URLs
                 print(f"[save] Starting download to {local_path}")
                 resp = session.get(url, stream=True, timeout=600, allow_redirects=True)
                 resp.raise_for_status()
@@ -151,3 +160,4 @@ class YouTubeAPI:
 
 
 YouTube = YouTubeAPI()
+
