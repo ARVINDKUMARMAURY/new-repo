@@ -102,14 +102,21 @@ class YouTubeAPI:
         def _call():
             try:
                 session = _session()
-                headers = {"x-api-key": XBIT_API_KEY, "User-Agent": "Mozilla/5.0"}
+                headers = {"x-api-key": XBIT_API_KEY, "Content-Type": "application/json", "User-Agent": "Mozilla/5.0"}
                 resp = session.get(f"{XBIT_API_URL}/info/{vidid}", headers=headers, timeout=60)
+                print(f"[xBit] GET /info/{vidid} -> status={resp.status_code}")
                 data = resp.json()
+                print(f"[xBit] response: {data}")
                 session.close()
                 if data.get("status") == "success":
-                    return data.get("video_url") if want_video else data.get("audio_url")
+                    url = data.get("video_url") if want_video else data.get("audio_url")
+                    if not url:
+                        print(f"[xBit] success=True but no {'video_url' if want_video else 'audio_url'} in response")
+                    return url
+                print(f"[xBit] status != success, full response above")
                 return None
-            except Exception:
+            except Exception as e:
+                print(f"[xBit] EXCEPTION for {vidid}: {type(e).__name__}: {e}")
                 return None
 
         return await loop.run_in_executor(None, _call)
