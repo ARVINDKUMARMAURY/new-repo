@@ -14,13 +14,13 @@ MONGO_URL = "mongodb+srv://yb131567_db_user:R8zxuvc9Qn999Arg@cluster0.drjaxl8.mo
 # Bot start + song play + error alerts sab yahan jaayenge
 LOG_GROUP_ID = -1004367650578
 
-# ===================== xBit API (only source, no yt-dlp) =====================
-XBIT_API_KEY = "xbit_DSsv0UVt9GVmGSTN5RViq7i-u4qHyFJK"
-XBIT_API_URL = "https://tgapi.xbitcode.com"
+# ===================== BabyAPI (song/video fetch source) =====================
+BASE_URL = "https://api.babiesiq.tech"
+API_KEY = "ADMINBABYX_BE1B36999F84D14C6DAF231FA4768710577EC9A1"
 
 # ===================== Permanent NVMe Storage =====================
 STORAGE_DIR = "/root/vps_songs"
 
 # ===================== Limits =====================
-DURATION_LIMIT = 18000   # seconds, default 20 min
-QUEUE_LIMIT = 30        # max songs per chat queue
+DURATION_LIMIT = 18000   # seconds, 5 hours
+QUEUE_LIMIT = 30         # max songs per chat queue
