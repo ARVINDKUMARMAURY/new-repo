@@ -128,16 +128,21 @@ class YouTubeAPI:
             tmp_path = local_path + ".part"
             try:
                 session = _session()
-                resp = session.get(url, stream=True, timeout=120, allow_redirects=True)
+                print(f"[save] Starting download to {local_path}")
+                resp = session.get(url, stream=True, timeout=600, allow_redirects=True)
                 resp.raise_for_status()
+                total = 0
                 with open(tmp_path, "wb") as f:
                     for chunk in resp.iter_content(chunk_size=1024 * 1024):
                         if chunk:
                             f.write(chunk)
+                            total += len(chunk)
                 session.close()
                 os.rename(tmp_path, local_path)
+                print(f"[save] Done: {local_path} ({total / 1024 / 1024:.1f} MB)")
                 return local_path
-            except Exception:
+            except Exception as e:
+                print(f"[save] EXCEPTION saving {local_path}: {type(e).__name__}: {e}")
                 if os.path.exists(tmp_path):
                     os.remove(tmp_path)
                 return None
