@@ -1,6 +1,7 @@
 import asyncio
 import os
 import re
+import time
 from typing import Union
 
 import requests
@@ -8,9 +9,11 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from py_yt import VideosSearch
 
-from config import XBIT_API_KEY, XBIT_API_URL, STORAGE_DIR
+from config import BASE_URL, API_KEY, STORAGE_DIR
 
 os.makedirs(STORAGE_DIR, exist_ok=True)
+
+STREAM_MODE = False
 
 
 def _session():
@@ -31,6 +34,29 @@ def _clean(link: str) -> str:
     return link
 
 
+def _wait_until_ready(stream_url: str, max_attempts: int) -> bool:
+    session = requests.Session()
+    try:
+        for attempt in range(max_attempts):
+            try:
+                r = session.get(stream_url, timeout=10, stream=True, allow_redirects=True)
+                r.close()
+                if r.status_code in (200, 206):
+                    return True
+                elif r.status_code in (204, 423, 404, 410):
+                    time.sleep(2)
+                    continue
+                elif r.status_code in (401, 403, 429):
+                    return False
+                else:
+                    return False
+            except requests.exceptions.RequestException:
+                time.sleep(2)
+        return False
+    finally:
+        session.close()
+
+
 class YouTubeAPI:
     def __init__(self):
         self.base = "https://www.youtube.com/watch?v="
@@ -42,7 +68,6 @@ class YouTubeAPI:
         return bool(re.search(self.regex, link))
 
     async def track(self, query: str, videoid: Union[bool, str] = None):
-        """Search a song by name or link. Returns (details_dict, vidid)."""
         link = self.base + query if videoid else _clean(query)
         results = VideosSearch(link, limit=1)
         title = duration_min = duration_sec = vidid = yturl = thumbnail = None
@@ -74,18 +99,10 @@ class YouTubeAPI:
         }
         return details, vidid
 
-    # ===================================================================
-    # DOWNLOAD — permanent NVMe storage cache first, then xBit API only
-    # ===================================================================
     async def download(self, vidid: str, video: bool = False):
-        """
-        Returns local filesystem path to the audio/video file.
-        1. Check STORAGE_DIR cache first (instant, no API call).
-        2. If missing, fetch stream URL from xBit API only (no yt-dlp).
-        3. Download & permanently save under STORAGE_DIR for next time.
-        Stream URLs can be short-lived/one-time-use, so on failure we
-        re-fetch a fresh URL and retry instead of reusing a stale one.
-        """
+        if STREAM_MODE:
+            return await self._baby_fetch(vidid, want_video=video)
+
         ext = "mp4" if video else "mp3"
         local_path = os.path.join(STORAGE_DIR, f"{vidid}.{ext}")
 
@@ -93,70 +110,89 @@ class YouTubeAPI:
             return local_path
 
         for attempt in range(1, 3):
-            stream_url = await self._xbit_fetch(vidid, want_video=video)
+            stream_url = await self._baby_fetch(vidid, want_video=video)
             if not stream_url:
                 return None
+
+            if getattr(self, "_last_type", None) == "live":
+                return stream_url
 
             saved_path = await self._save_to_storage(stream_url, local_path)
             if saved_path:
                 return saved_path
 
-            print(f"[download] Attempt {attempt} failed for {vidid}, retrying with a fresh URL...")
-
         return None
 
-    async def _xbit_fetch(self, vidid: str, want_video: bool = False):
+    async def _baby_fetch(self, vidid: str, want_video: bool = False):
         loop = asyncio.get_running_loop()
+        self._last_type = None
+        max_attempts = 90 if want_video else 60
 
         def _call():
             try:
+                kind = "video" if want_video else "song"
+                if STREAM_MODE:
+                    url = f"{BASE_URL}/api/{kind}?query={vidid}&api={API_KEY}"
+                else:
+                    url = f"{BASE_URL}/api/{kind}?query={vidid}&download=true&api={API_KEY}"
+
                 session = _session()
-                headers = {"x-api-key": XBIT_API_KEY, "Content-Type": "application/json", "User-Agent": "Mozilla/5.0"}
-                resp = session.get(f"{XBIT_API_URL}/info/{vidid}", headers=headers, timeout=60)
-                print(f"[xBit] GET /info/{vidid} -> status={resp.status_code}")
+                resp = session.get(url, timeout=60)
+                print(f"[BabyAPI] GET {kind} {vidid} -> status={resp.status_code}")
                 data = resp.json()
-                print(f"[xBit] response: {data}")
+                print(f"[BabyAPI] response: {data}")
                 session.close()
-                if data.get("status") == "success":
-                    url = data.get("video_url") if want_video else data.get("audio_url")
-                    if not url:
-                        print(f"[xBit] success=True but no {'video_url' if want_video else 'audio_url'} in response")
-                    return url
-                print(f"[xBit] status != success, full response above")
-                return None
+
+                stream = data.get("stream")
+                if not stream:
+                    print(f"[BabyAPI] no 'stream' field in response")
+                    return None
+
+                self._last_type = data.get("type")
+
+                if self._last_type == "live":
+                    return stream
+
+                if STREAM_MODE:
+                    return stream
+
+                ready = _wait_until_ready(stream, max_attempts)
+                if not ready:
+                    print(f"[BabyAPI] stream never became ready for {vidid}")
+                    return None
+
+                return stream
+
             except Exception as e:
-                print(f"[xBit] EXCEPTION for {vidid}: {type(e).__name__}: {e}")
+                print(f"[BabyAPI] EXCEPTION for {vidid}: {type(e).__name__}: {e}")
                 return None
 
         return await loop.run_in_executor(None, _call)
 
     async def _save_to_storage(self, url: str, local_path: str):
-        loop = asyncio.get_running_loop()
+        tmp_path = local_path + ".part"
+        try:
+            print(f"[save] Starting download to {local_path}")
+            proc = await asyncio.create_subprocess_shell(
+                f'curl -L "{url}" -o "{tmp_path}" -s --max-time 120'
+            )
+            await proc.communicate()
 
-        def _dl():
-            tmp_path = local_path + ".part"
-            try:
-                session = requests.Session()  # no retry adapter — avoid re-hitting one-time URLs
-                print(f"[save] Starting download to {local_path}")
-                resp = session.get(url, stream=True, timeout=600, allow_redirects=True)
-                resp.raise_for_status()
-                total = 0
-                with open(tmp_path, "wb") as f:
-                    for chunk in resp.iter_content(chunk_size=1024 * 1024):
-                        if chunk:
-                            f.write(chunk)
-                            total += len(chunk)
-                session.close()
-                os.rename(tmp_path, local_path)
-                print(f"[save] Done: {local_path} ({total / 1024 / 1024:.1f} MB)")
-                return local_path
-            except Exception as e:
-                print(f"[save] EXCEPTION saving {local_path}: {type(e).__name__}: {e}")
+            if not os.path.exists(tmp_path) or os.path.getsize(tmp_path) < 50_000:
+                print(f"[save] Download too small or missing for {local_path}")
                 if os.path.exists(tmp_path):
                     os.remove(tmp_path)
                 return None
 
-        return await loop.run_in_executor(None, _dl)
+            os.rename(tmp_path, local_path)
+            print(f"[save] Done: {local_path}")
+            return local_path
+
+        except Exception as e:
+            print(f"[save] EXCEPTION saving {local_path}: {type(e).__name__}: {e}")
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+            return None
 
 
 YouTube = YouTubeAPI()
