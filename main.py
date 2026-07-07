@@ -127,7 +127,7 @@ async def start_playback(chat_id: int, song: dict):
 
     local_path = await YouTube.download(song["vidid"], video=song["video"])
     if not local_path:
-        await bot.send_message(chat_id, f"❌ Couldn't fetch '{song['title']}' from xBit API.")
+        await bot.send_message(chat_id, f"❌ Couldn't fetch '{song['title']}'. Try again later.")
         return await play_next(chat_id)
 
     await call_py.play(chat_id, MediaStream(local_path))
@@ -419,3 +419,4 @@ async def main():
 if __name__ == "__main__":
     loop = asyncio.get_event_loop()
     loop.run_until_complete(main())
+
