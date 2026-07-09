@@ -1,216 +1,572 @@
 import asyncio
 import os
-import re
-import time
-from typing import Union
+import sys
+from datetime import datetime
 
-import requests
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
-from py_yt import VideosSearch
+from pyrogram import Client, filters
+from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
+from pyrogram.enums import ChatMemberStatus
+from pyrogram.errors import UserNotParticipant, UserAlreadyParticipant, FloodWait, UserBannedInChannel
+from pytgcalls import PyTgCalls, filters as call_filters
+from pytgcalls.types import MediaStream
 
-from config import BASE_URL, API_KEY, STORAGE_DIR
+import config
+import database as db
+import musicqueue as q
+from youtube import YouTube
+from vclogger import setup_vc_logger
+from button_styles import primary_button, success_button, danger_button, default_button
 
-os.makedirs(STORAGE_DIR, exist_ok=True)
+# ===================== Clients =====================
+bot = Client(
+    "musicbot",
+    api_id=config.API_ID,
+    api_hash=config.API_HASH,
+    bot_token=config.BOT_TOKEN,
+)
+
+assistant = Client(
+    "assistant",
+    api_id=config.API_ID,
+    api_hash=config.API_HASH,
+    session_string=config.SESSION_STRING,
+)
+
+call_py = PyTgCalls(assistant)
+
+ASSISTANT_ID = None  # set at startup after assistant.start()
+ASSISTANT_USERNAME = None  # set at startup after assistant.start()
 
 
-def _session():
-    s = requests.Session()
-    retries = Retry(total=3, backoff_factor=0.3)
-    s.mount("http://", HTTPAdapter(max_retries=retries))
-    s.mount("https://", HTTPAdapter(max_retries=retries))
-    return s
+# ===================== Helpers =====================
+
+async def log(text: str):
+    if config.LOG_GROUP_ID:
+        try:
+            await bot.send_message(config.LOG_GROUP_ID, text)
+        except Exception:
+            pass
 
 
-def _clean(link: str) -> str:
-    if "&" in link:
-        link = link.split("&")[0]
-    if "?si=" in link:
-        link = link.split("?si=")[0]
-    elif "&si=" in link:
-        link = link.split("&si=")[0]
-    return link
-
-
-def _wait_until_ready(stream_url: str, max_attempts: int) -> bool:
-    session = requests.Session()
+async def is_authorized(chat_id: int, user_id: int) -> bool:
+    if user_id == config.OWNER_ID:
+        return True
     try:
-        for attempt in range(max_attempts):
-            try:
-                r = session.get(stream_url, timeout=10, stream=True, allow_redirects=True)
-                r.close()
-                if r.status_code in (200, 206):
-                    return True
-                elif r.status_code in (204, 423, 404, 410):
-                    time.sleep(2)
-                    continue
-                elif r.status_code in (401, 403, 429):
-                    return False
-                else:
-                    return False
-            except requests.exceptions.RequestException:
-                time.sleep(2)
-        return False
-    finally:
-        session.close()
+        member = await bot.get_chat_member(chat_id, user_id)
+        if member.status in (ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER):
+            return True
+    except Exception:
+        pass
+    return await db.is_auth_user(chat_id, user_id)
 
 
-class YouTubeAPI:
-    def __init__(self):
-        self.base = "https://www.youtube.com/watch?v="
-        self.regex = r"(?:youtube\.com|youtu\.be)"
+async def track_served(message: Message):
+    await db.add_served_user(message.from_user.id)
+    if message.chat.type != "private":
+        await db.add_served_chat(message.chat.id)
 
-    async def exists(self, link: str, videoid: Union[bool, str] = None):
-        if videoid:
-            link = self.base + link
-        return bool(re.search(self.regex, link))
 
-    async def track(self, query: str, videoid: Union[bool, str] = None):
-        link = self.base + query if videoid else _clean(query)
-        results = VideosSearch(link, limit=1)
-        title = duration_min = duration_sec = vidid = yturl = thumbnail = None
-        for result in (await results.next())["result"]:
-            title = result["title"]
-            duration_min = result["duration"]
-            vidid = result["id"]
-            yturl = result["link"]
-            thumbnail = result["thumbnails"][0]["url"].split("?")[0]
-            duration_sec = 0
-            if duration_min:
-                try:
-                    parts = duration_min.split(":")
-                    if len(parts) == 3:
-                        duration_sec = int(parts[0]) * 3600 + int(parts[1]) * 60 + int(parts[2])
-                    elif len(parts) == 2:
-                        duration_sec = int(parts[0]) * 60 + int(parts[1])
-                except ValueError:
-                    duration_sec = 0
-        if vidid is None:
-            return None, None
-        details = {
-            "title": title,
-            "link": yturl,
-            "vidid": vidid,
-            "duration_min": duration_min,
-            "duration_sec": duration_sec,
-            "thumb": thumbnail,
-        }
-        return details, vidid
-
-    async def download(self, vidid: str, video: bool = False):
-        ext = "mp4" if video else "mp3"
-        local_path = os.path.join(STORAGE_DIR, f"{vidid}.{ext}")
-
-        if os.path.exists(local_path) and os.path.getsize(local_path) > 0:
-            return local_path
-
-        for attempt in range(1, 3):
-            stream_url, kind_type = await self._baby_fetch(vidid, want_video=video)
-            if not stream_url:
-                return None
-
-            if kind_type == "live":
-                return stream_url
-
-            saved_path = await self._save_to_storage(stream_url, local_path)
-            if saved_path:
-                return saved_path
-
-        return None
-
-    async def get_playable(self, vidid: str, video: bool = False):
-        """
-        Returns something playable as fast as possible:
-        - local cached file if it already exists (instant)
-        - otherwise the direct stream URL (playback starts as soon as it's
-          ready, without waiting for the full file to download), while a
-          background task saves it to STORAGE_DIR for next time.
-        """
-        ext = "mp4" if video else "mp3"
-        local_path = os.path.join(STORAGE_DIR, f"{vidid}.{ext}")
-
-        if os.path.exists(local_path) and os.path.getsize(local_path) > 0:
-            return local_path
-
-        stream_url, kind_type = await self._baby_fetch(vidid, want_video=video)
-        if not stream_url:
-            return None
-
-        if kind_type != "live":
-            asyncio.create_task(self._cache_in_background(vidid, video))
-
-        return stream_url
-
-    async def _cache_in_background(self, vidid: str, video: bool):
-        try:
-            await self.download(vidid, video=video)
-        except Exception as e:
-            print(f"[bg-cache] EXCEPTION for {vidid}: {type(e).__name__}: {e}")
-
-    async def _baby_fetch(self, vidid: str, want_video: bool = False):
-        """Returns (stream_url, type) or (None, None)."""
-        loop = asyncio.get_running_loop()
-        max_attempts = 90 if want_video else 60
-
-        def _call():
-            try:
-                kind = "video" if want_video else "song"
-                url = f"{BASE_URL}/api/{kind}?query={vidid}&download=true&api={API_KEY}"
-
-                session = _session()
-                resp = session.get(url, timeout=60)
-                print(f"[BabyAPI] GET {kind} {vidid} -> status={resp.status_code}")
-                data = resp.json()
-                print(f"[BabyAPI] response: {data}")
-                session.close()
-
-                stream = data.get("stream")
-                if not stream:
-                    print(f"[BabyAPI] no 'stream' field in response")
-                    return None, None
-
-                kind_type = data.get("type")
-
-                if kind_type == "live":
-                    return stream, kind_type
-
-                ready = _wait_until_ready(stream, max_attempts)
-                if not ready:
-                    print(f"[BabyAPI] stream never became ready for {vidid}")
-                    return None, None
-
-                return stream, kind_type
-
-            except Exception as e:
-                print(f"[BabyAPI] EXCEPTION for {vidid}: {type(e).__name__}: {e}")
-                return None, None
-
-        return await loop.run_in_executor(None, _call)
-
-    async def _save_to_storage(self, url: str, local_path: str):
-        tmp_path = local_path + ".part"
-        try:
-            print(f"[save] Starting download to {local_path}")
-            proc = await asyncio.create_subprocess_shell(
-                f'curl -L "{url}" -o "{tmp_path}" -s --max-time 120'
+async def ensure_assistant_in_chat(chat_id: int) -> bool:
+    """Checks if the assistant is already in the group; if not, joins via invite link.
+    If the assistant is banned, notifies the group with its username."""
+    try:
+        member = await bot.get_chat_member(chat_id, ASSISTANT_ID)
+        if member.status == ChatMemberStatus.BANNED:
+            await bot.send_message(
+                chat_id,
+                f"❌ My assistant (@{ASSISTANT_USERNAME}) is banned from this group. "
+                f"Please unban @{ASSISTANT_USERNAME}, then play the song again.",
             )
-            await proc.communicate()
+            return False
+        if member.status in (
+            ChatMemberStatus.MEMBER,
+            ChatMemberStatus.ADMINISTRATOR,
+            ChatMemberStatus.OWNER,
+        ):
+            return True
+        # status LEFT or RESTRICTED -> fall through and try to join
+    except UserNotParticipant:
+        pass
+    except Exception:
+        pass
 
-            if not os.path.exists(tmp_path) or os.path.getsize(tmp_path) < 50_000:
-                print(f"[save] Download too small or missing for {local_path}")
-                if os.path.exists(tmp_path):
-                    os.remove(tmp_path)
-                return None
+    try:
+        invite_link = await bot.export_chat_invite_link(chat_id)
+    except Exception as e:
+        await bot.send_message(
+            chat_id,
+            "❌ I need the **'Invite Users via Link'** permission so I can add my assistant "
+            "to this group. Please make me admin with this permission, then play the song again.",
+        )
+        await log(f"⚠️ Couldn't create invite link for `{chat_id}` (missing permission): {e}")
+        return False
 
-            os.rename(tmp_path, local_path)
-            print(f"[save] Done: {local_path}")
-            return local_path
+    try:
+        await assistant.join_chat(invite_link)
+        await log(f"✅ Assistant joined chat `{chat_id}` via invite link.")
+        return True
+    except UserAlreadyParticipant:
+        return True
+    except UserBannedInChannel:
+        await bot.send_message(
+            chat_id,
+            f"❌ My assistant (@{ASSISTANT_USERNAME}) is banned from this group. "
+            f"Please unban @{ASSISTANT_USERNAME}, then play the song again.",
+        )
+        return False
+    except FloodWait as e:
+        await log(f"⚠️ FloodWait while joining `{chat_id}`: wait {e.value}s")
+        return False
+    except Exception as e:
+        await log(f"⚠️ Assistant couldn't join chat `{chat_id}`: {e}")
+        return False
 
+
+async def start_playback(chat_id: int, song: dict):
+    """Downloads (or fetches from cache) and starts streaming a song."""
+    joined = await ensure_assistant_in_chat(chat_id)
+    if not joined:
+        return
+
+    local_path = await YouTube.get_playable(song["vidid"], video=song["video"])
+    if not local_path:
+        await bot.send_message(chat_id, f"❌ Couldn't fetch '{song['title']}'. Try again later.")
+        return await play_next(chat_id)
+
+    await call_py.play(chat_id, MediaStream(local_path))
+    q.set_current(chat_id, song)
+    q.set_paused(chat_id, False)
+
+    buttons = InlineKeyboardMarkup(
+        [
+            [
+                default_button("⏭", callback_data="ctl_skip"),
+                default_button("⏹", callback_data="ctl_stop"),
+                default_button("⏸", callback_data="ctl_pause"),
+            ],
+            [
+                primary_button("➕", callback_data="ctl_queue"),
+                danger_button("Close", callback_data="ctl_close"),
+            ],
+        ]
+    )
+    text = (
+        "🎵 **Now Playing**\n\n"
+        f"**Title:** {song['title']}\n"
+        f"**Duration:** {song['duration']}\n"
+        f"**Requested by:** {song['requested_by']}"
+    )
+    await bot.send_message(chat_id, text, reply_markup=buttons)
+    await log(
+        f"🎵 Song played\nChat: `{chat_id}`\nTitle: {song['title']}\n"
+        f"Requested by: {song['requested_by']}\nTime: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+    )
+
+
+async def play_next(chat_id: int):
+    next_song = q.pop_next(chat_id)
+    if next_song:
+        await start_playback(chat_id, next_song)
+    else:
+        q.clear_current(chat_id)
+        try:
+            await call_py.leave_call(chat_id)
+        except Exception:
+            pass
+
+
+@call_py.on_update(call_filters.stream_end())
+async def stream_end_handler(_, update):
+    await play_next(update.chat_id)
+
+
+# ===================== Commands =====================
+
+@bot.on_message(filters.new_chat_members)
+async def welcome_cmd(_, message: Message):
+    for member in message.new_chat_members:
+        await message.reply_text(f"💓 welcome {member.mention}")
+
+
+@bot.on_message(filters.command("start"))
+async def start_cmd(_, message: Message):
+    await track_served(message)
+    buttons = InlineKeyboardMarkup(
+        [
+            [
+                primary_button("👨‍💻 Developer", url="https://t.me/Avisha_Asstiant"),
+                success_button("💬 Support", url="https://t.me/Avisha_101"),
+            ]
+        ]
+    )
+    await message.reply_text(
+        "Hi! I'm a simple music bot.\n\n"
+        "/play <song name> - play a song\n"
+        "/vplay <song name> - play a video\n"
+        "/pause /resume /skip /stop /end\n"
+        "/queue - view queue\n"
+        "/shuffle - shuffle the queue\n"
+        "/authuser - grant/revoke permission (reply to a user)\n"
+        "/id - get numeric ID (reply or @username)\n"
+        "/vclogger - toggle VC join/leave logging",
+        reply_markup=buttons,
+    )
+
+
+async def _play_handler(_, message: Message, video: bool):
+    await track_served(message)
+    chat_id = message.chat.id
+
+    if len(message.command) < 2:
+        return await message.reply_text("Give me a song name or link. Example: `/play tum hi ho`")
+
+    query = message.text.split(None, 1)[1]
+    searching = await message.reply_text("🔎 Searching...")
+
+    details, vidid = await YouTube.track(query, videoid=False)
+    if not vidid:
+        return await searching.edit_text("❌ Nothing found for that.")
+
+    if details["duration_sec"] and details["duration_sec"] > config.DURATION_LIMIT:
+        return await searching.edit_text(
+            f"❌ This song is too long ({details['duration_min']}). "
+            f"Max allowed: {config.DURATION_LIMIT // 60} min."
+        )
+
+    song = {
+        "title": details["title"],
+        "vidid": vidid,
+        "duration": details["duration_min"],
+        "requested_by": message.from_user.mention,
+        "video": video,
+    }
+
+    if q.is_active(chat_id):
+        added = q.add_to_queue(chat_id, song)
+        if not added:
+            return await searching.edit_text(f"❌ Queue is full (max {config.QUEUE_LIMIT}).")
+
+        position = len(q.get_queue(chat_id))
+        text = (
+            f"✅ **Added to queue: {position}**\n\n"
+            f"**Title:** {song['title']}\n"
+            f"**Duration:** {song['duration']}\n"
+            f"**Requested by:** {song['requested_by']}"
+        )
+        buttons = InlineKeyboardMarkup(
+            [
+                [
+                    danger_button("▶️ Play Now", callback_data=f"ctl_playnow:{song['vidid']}"),
+                    danger_button("Close", callback_data="ctl_close"),
+                ]
+            ]
+        )
+        await searching.delete()
+        await bot.send_message(chat_id, text, reply_markup=buttons)
+        try:
+            await message.delete()
+        except Exception:
+            pass
+        return
+
+    q.add_to_queue(chat_id, song)
+    await searching.delete()
+    first_song = q.pop_next(chat_id)
+    await start_playback(chat_id, first_song)
+    try:
+        await message.delete()
+    except Exception:
+        pass
+
+
+@bot.on_message(filters.command("play"))
+async def play_cmd(client, message: Message):
+    await _play_handler(client, message, video=False)
+
+
+@bot.on_message(filters.command("vplay"))
+async def vplay_cmd(client, message: Message):
+    await _play_handler(client, message, video=True)
+
+
+@bot.on_callback_query(filters.regex("^ctl_"))
+async def control_buttons_cb(_, cq: CallbackQuery):
+    chat_id = cq.message.chat.id
+    action = cq.data.split("_", 1)[1]
+
+    if not await is_authorized(chat_id, cq.from_user.id):
+        return await cq.answer("❌ Only admins/authorized users can do this.", show_alert=True)
+
+    if action.startswith("playnow:"):
+        vidid = action.split(":", 1)[1]
+        moved = q.move_to_front(chat_id, vidid)
+        if not moved:
+            return await cq.answer("Song not found in queue.", show_alert=True)
+        await cq.answer("▶️ Playing now...")
+        try:
+            await cq.message.delete()
+        except Exception:
+            pass
+        await play_next(chat_id)
+
+    elif action == "pause":
+        if q.is_paused(chat_id):
+            await call_py.resume(chat_id)
+            q.set_paused(chat_id, False)
+            await cq.answer("▶️ Resumed.")
+            new_buttons = InlineKeyboardMarkup(
+                [
+                    [
+                        default_button("⏭", callback_data="ctl_skip"),
+                        default_button("⏹", callback_data="ctl_stop"),
+                        default_button("⏸", callback_data="ctl_pause"),
+                    ],
+                    [
+                        primary_button("➕", callback_data="ctl_queue"),
+                        danger_button("Close", callback_data="ctl_close"),
+                    ],
+                ]
+            )
+        else:
+            await call_py.pause(chat_id)
+            q.set_paused(chat_id, True)
+            await cq.answer("⏸ Paused.")
+            new_buttons = InlineKeyboardMarkup(
+                [
+                    [
+                        default_button("⏭", callback_data="ctl_skip"),
+                        default_button("⏹", callback_data="ctl_stop"),
+                        default_button("▶️", callback_data="ctl_pause"),
+                    ],
+                    [
+                        primary_button("➕", callback_data="ctl_queue"),
+                        danger_button("Close", callback_data="ctl_close"),
+                    ],
+                ]
+            )
+        try:
+            await cq.message.edit_reply_markup(new_buttons)
+        except Exception:
+            pass
+
+    elif action == "skip":
+        await cq.answer("⏭ Skipped.")
+        await play_next(chat_id)
+
+    elif action == "stop":
+        q.clear_queue(chat_id)
+        try:
+            await call_py.leave_call(chat_id)
+        except Exception:
+            pass
+        await cq.answer("⏹ Stopped.")
+        try:
+            await cq.message.delete()
+        except Exception:
+            pass
+
+    elif action == "queue":
+        songs = q.get_queue(chat_id)
+        if not songs:
+            await cq.answer("Queue is empty.", show_alert=True)
+        else:
+            preview = "\n".join(f"{i}. {s['title']}" for i, s in enumerate(songs[:10], 1))
+            await cq.answer(preview, show_alert=True)
+
+    elif action == "close":
+        await cq.answer()
+        try:
+            await cq.message.delete()
+        except Exception:
+            pass
+
+
+@bot.on_message(filters.command("pause"))
+async def pause_cmd(_, message: Message):
+    if not await is_authorized(message.chat.id, message.from_user.id):
+        return await message.reply_text("❌ Only admins/authorized users can do this.")
+    await call_py.pause(message.chat.id)
+    await message.reply_text("⏸ Paused.")
+
+
+@bot.on_message(filters.command("resume"))
+async def resume_cmd(_, message: Message):
+    if not await is_authorized(message.chat.id, message.from_user.id):
+        return await message.reply_text("❌ Only admins/authorized users can do this.")
+    await call_py.resume(message.chat.id)
+    await message.reply_text("▶️ Resumed.")
+
+
+@bot.on_message(filters.command("skip"))
+async def skip_cmd(_, message: Message):
+    if not await is_authorized(message.chat.id, message.from_user.id):
+        return await message.reply_text("❌ Only admins/authorized users can do this.")
+    await message.reply_text("⏭ Skipped.")
+    await play_next(message.chat.id)
+    try:
+        await message.delete()
+    except Exception:
+        pass
+
+
+@bot.on_message(filters.command(["stop", "end"]))
+async def stop_cmd(_, message: Message):
+    if not await is_authorized(message.chat.id, message.from_user.id):
+        return await message.reply_text("❌ Only admins/authorized users can do this.")
+    q.clear_queue(message.chat.id)
+    q.clear_current(message.chat.id)
+    try:
+        await call_py.leave_call(message.chat.id)
+    except Exception:
+        pass
+    await message.reply_text("⏹ Stopped and cleared the queue.")
+    try:
+        await message.delete()
+    except Exception:
+        pass
+
+
+@bot.on_message(filters.command("queue"))
+async def queue_cmd(_, message: Message):
+    songs = q.get_queue(message.chat.id)
+    if not songs:
+        return await message.reply_text("Queue is empty.")
+    text = "📋 **Queue:**\n\n"
+    for i, s in enumerate(songs, 1):
+        text += f"{i}. {s['title']} — {s['requested_by']}\n"
+    await message.reply_text(text)
+
+
+@bot.on_message(filters.command("shuffle"))
+async def shuffle_cmd(_, message: Message):
+    if not await is_authorized(message.chat.id, message.from_user.id):
+        return await message.reply_text("❌ Only admins/authorized users can do this.")
+    if q.shuffle_queue(message.chat.id):
+        await message.reply_text("🔀 Queue shuffled.")
+    else:
+        await message.reply_text("Need at least 2 songs in the queue to shuffle.")
+
+
+@bot.on_message(filters.command("authuser"))
+async def authuser_cmd(_, message: Message):
+    chat_id = message.chat.id
+    if not await is_authorized(chat_id, message.from_user.id):
+        return await message.reply_text("❌ Only admins can manage authorized users.")
+
+    target = None
+    if message.reply_to_message:
+        target = message.reply_to_message.from_user
+    elif len(message.command) > 1:
+        try:
+            target = await bot.get_users(message.command[1])
+        except Exception:
+            return await message.reply_text("❌ User not found.")
+
+    if not target:
+        return await message.reply_text("Reply to a member's message, or use `/authuser <user_id>`.")
+
+    already = await db.is_auth_user(chat_id, target.id)
+    if already:
+        await db.remove_auth_user(chat_id, target.id)
+        await message.reply_text(f"🚫 Removed {target.mention}'s authorized access.")
+    else:
+        await db.add_auth_user(chat_id, target.id)
+        await message.reply_text(f"✅ {target.mention} is now an authorized user.")
+
+
+@bot.on_message(filters.command("id"))
+async def id_cmd(_, message: Message):
+    target = None
+
+    if message.reply_to_message:
+        target = message.reply_to_message.from_user
+    elif len(message.command) > 1:
+        query = message.command[1].lstrip("@")
+        try:
+            target = await bot.get_users(query)
+        except Exception:
+            return await message.reply_text("❌ User not found.")
+    else:
+        return await message.reply_text("Reply to a message, or use `/id @username`.")
+
+    await message.reply_text(
+        f"👤 **User Info**\nName: {target.first_name}\nUsername: @{target.username or 'N/A'}\nID: `{target.id}`"
+    )
+
+
+@bot.on_message(filters.command("restart") & filters.user(config.OWNER_ID))
+async def restart_cmd(_, message: Message):
+    msg = await message.reply_text("🔄 Restarting bot...")
+    with open("/tmp/musicbot_restart.txt", "w") as f:
+        f.write(f"{msg.chat.id}\n{msg.id}")
+    await log(f"🔄 Bot restarting (triggered by owner)\nTime: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    os.execl(sys.executable, sys.executable, *sys.argv)
+
+
+@bot.on_message(filters.command("broadcast") & filters.user(config.OWNER_ID))
+async def broadcast_cmd(_, message: Message):
+    if len(message.command) < 2 and not message.reply_to_message:
+        return await message.reply_text("Give some text to broadcast, or reply to a message with `/broadcast`.")
+
+    sent, failed = 0, 0
+    users = await db.get_served_users()
+    chats = await db.get_served_chats()
+
+    status = await message.reply_text("📢 Starting broadcast...")
+
+    for uid in users:
+        try:
+            if message.reply_to_message:
+                await message.reply_to_message.copy(uid)
+            else:
+                await bot.send_message(uid, message.text.split(None, 1)[1])
+            sent += 1
+        except Exception:
+            failed += 1
+        await asyncio.sleep(0.1)
+
+    for cid in chats:
+        try:
+            if message.reply_to_message:
+                await message.reply_to_message.copy(cid)
+            else:
+                await bot.send_message(cid, message.text.split(None, 1)[1])
+            sent += 1
+        except Exception:
+            failed += 1
+        await asyncio.sleep(0.1)
+
+    await status.edit_text(f"✅ Broadcast complete.\nSent: {sent} | Failed: {failed}")
+
+
+# ===================== Startup =====================
+
+async def main():
+    global ASSISTANT_ID, ASSISTANT_USERNAME
+    await bot.start()
+    await assistant.start()
+    me = await assistant.get_me()
+    ASSISTANT_ID = me.id
+    ASSISTANT_USERNAME = me.username
+    await call_py.start()
+    setup_vc_logger(bot, assistant, call_py)
+
+    restart_file = "/tmp/musicbot_restart.txt"
+    if os.path.exists(restart_file):
+        try:
+            with open(restart_file) as f:
+                chat_id_str, msg_id_str = f.read().strip().split("\n")
+            await bot.edit_message_text(int(chat_id_str), int(msg_id_str), "✅ Bot restarted successfully!")
         except Exception as e:
-            print(f"[save] EXCEPTION saving {local_path}: {type(e).__name__}: {e}")
-            if os.path.exists(tmp_path):
-                os.remove(tmp_path)
-            return None
+            print(f"[restart] Couldn't edit restart confirmation: {e}")
+        finally:
+            os.remove(restart_file)
+
+    await log(f"✅ Bot start ho gaya!\nTime: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print("Bot started.")
+    await asyncio.Event().wait()
 
 
-YouTube = YouTubeAPI()
+if __name__ == "__main__":
+    loop = asyncio.get_event_loop()
+    loop.run_until_complete(main())
