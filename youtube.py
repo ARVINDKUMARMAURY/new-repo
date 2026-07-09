@@ -13,8 +13,6 @@ from config import BASE_URL, API_KEY, STORAGE_DIR
 
 os.makedirs(STORAGE_DIR, exist_ok=True)
 
-STREAM_MODE = False
-
 
 def _session():
     s = requests.Session()
@@ -100,9 +98,6 @@ class YouTubeAPI:
         return details, vidid
 
     async def download(self, vidid: str, video: bool = False):
-        if STREAM_MODE:
-            return await self._baby_fetch(vidid, want_video=video)
-
         ext = "mp4" if video else "mp3"
         local_path = os.path.join(STORAGE_DIR, f"{vidid}.{ext}")
 
@@ -110,11 +105,11 @@ class YouTubeAPI:
             return local_path
 
         for attempt in range(1, 3):
-            stream_url = await self._baby_fetch(vidid, want_video=video)
+            stream_url, kind_type = await self._baby_fetch(vidid, want_video=video)
             if not stream_url:
                 return None
 
-            if getattr(self, "_last_type", None) == "live":
+            if kind_type == "live":
                 return stream_url
 
             saved_path = await self._save_to_storage(stream_url, local_path)
@@ -123,18 +118,44 @@ class YouTubeAPI:
 
         return None
 
+    async def get_playable(self, vidid: str, video: bool = False):
+        """
+        Returns something playable as fast as possible:
+        - local cached file if it already exists (instant)
+        - otherwise the direct stream URL (playback starts as soon as it's
+          ready, without waiting for the full file to download), while a
+          background task saves it to STORAGE_DIR for next time.
+        """
+        ext = "mp4" if video else "mp3"
+        local_path = os.path.join(STORAGE_DIR, f"{vidid}.{ext}")
+
+        if os.path.exists(local_path) and os.path.getsize(local_path) > 0:
+            return local_path
+
+        stream_url, kind_type = await self._baby_fetch(vidid, want_video=video)
+        if not stream_url:
+            return None
+
+        if kind_type != "live":
+            asyncio.create_task(self._cache_in_background(vidid, video))
+
+        return stream_url
+
+    async def _cache_in_background(self, vidid: str, video: bool):
+        try:
+            await self.download(vidid, video=video)
+        except Exception as e:
+            print(f"[bg-cache] EXCEPTION for {vidid}: {type(e).__name__}: {e}")
+
     async def _baby_fetch(self, vidid: str, want_video: bool = False):
+        """Returns (stream_url, type) or (None, None)."""
         loop = asyncio.get_running_loop()
-        self._last_type = None
         max_attempts = 90 if want_video else 60
 
         def _call():
             try:
                 kind = "video" if want_video else "song"
-                if STREAM_MODE:
-                    url = f"{BASE_URL}/api/{kind}?query={vidid}&api={API_KEY}"
-                else:
-                    url = f"{BASE_URL}/api/{kind}?query={vidid}&download=true&api={API_KEY}"
+                url = f"{BASE_URL}/api/{kind}?query={vidid}&download=true&api={API_KEY}"
 
                 session = _session()
                 resp = session.get(url, timeout=60)
@@ -146,26 +167,23 @@ class YouTubeAPI:
                 stream = data.get("stream")
                 if not stream:
                     print(f"[BabyAPI] no 'stream' field in response")
-                    return None
+                    return None, None
 
-                self._last_type = data.get("type")
+                kind_type = data.get("type")
 
-                if self._last_type == "live":
-                    return stream
-
-                if STREAM_MODE:
-                    return stream
+                if kind_type == "live":
+                    return stream, kind_type
 
                 ready = _wait_until_ready(stream, max_attempts)
                 if not ready:
                     print(f"[BabyAPI] stream never became ready for {vidid}")
-                    return None
+                    return None, None
 
-                return stream
+                return stream, kind_type
 
             except Exception as e:
                 print(f"[BabyAPI] EXCEPTION for {vidid}: {type(e).__name__}: {e}")
-                return None
+                return None, None
 
         return await loop.run_in_executor(None, _call)
 
@@ -196,4 +214,3 @@ class YouTubeAPI:
 
 
 YouTube = YouTubeAPI()
-
