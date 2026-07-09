@@ -1,8 +1,10 @@
 import asyncio
+import os
+import sys
 from datetime import datetime
 
 from pyrogram import Client, filters
-from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
+from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 from pyrogram.enums import ChatMemberStatus
 from pyrogram.errors import UserNotParticipant, UserAlreadyParticipant, FloodWait, UserBannedInChannel
 from pytgcalls import PyTgCalls, filters as call_filters
@@ -13,6 +15,7 @@ import database as db
 import musicqueue as q
 from youtube import YouTube
 from vclogger import setup_vc_logger
+from button_styles import primary_button, success_button, danger_button, default_button
 
 # ===================== Clients =====================
 bot = Client(
@@ -132,10 +135,28 @@ async def start_playback(chat_id: int, song: dict):
 
     await call_py.play(chat_id, MediaStream(local_path))
     q.set_current(chat_id, song)
-    await bot.send_message(
-        chat_id,
-        f"▶️ Now playing: **{song['title']}**\nRequested by: {song['requested_by']}",
+    q.set_paused(chat_id, False)
+
+    buttons = InlineKeyboardMarkup(
+        [
+            [
+                default_button("⏭", callback_data="ctl_skip"),
+                default_button("⏹", callback_data="ctl_stop"),
+                default_button("⏸", callback_data="ctl_pause"),
+            ],
+            [
+                primary_button("➕", callback_data="ctl_queue"),
+                danger_button("Close", callback_data="ctl_close"),
+            ],
+        ]
     )
+    text = (
+        "🎵 **Now Playing**\n\n"
+        f"**Title:** {song['title']}\n"
+        f"**Duration:** {song['duration']}\n"
+        f"**Requested by:** {song['requested_by']}"
+    )
+    await bot.send_message(chat_id, text, reply_markup=buttons)
     await log(
         f"🎵 Song played\nChat: `{chat_id}`\nTitle: {song['title']}\n"
         f"Requested by: {song['requested_by']}\nTime: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
@@ -173,8 +194,8 @@ async def start_cmd(_, message: Message):
     buttons = InlineKeyboardMarkup(
         [
             [
-                InlineKeyboardButton("👨‍💻 Developer", url="https://t.me/Avisha_Asstiant"),
-                InlineKeyboardButton("💬 Support", url="https://t.me/Avisha_101"),
+                primary_button("👨‍💻 Developer", url="https://t.me/Avisha_Asstiant"),
+                success_button("💬 Support", url="https://t.me/Avisha_101"),
             ]
         ]
     )
@@ -224,7 +245,24 @@ async def _play_handler(_, message: Message, video: bool):
         added = q.add_to_queue(chat_id, song)
         if not added:
             return await searching.edit_text(f"❌ Queue is full (max {config.QUEUE_LIMIT}).")
-        await searching.edit_text(f"✅ Added to queue: **{song['title']}**")
+
+        position = len(q.get_queue(chat_id))
+        text = (
+            f"✅ **Added to queue: {position}**\n\n"
+            f"**Title:** {song['title']}\n"
+            f"**Duration:** {song['duration']}\n"
+            f"**Requested by:** {song['requested_by']}"
+        )
+        buttons = InlineKeyboardMarkup(
+            [
+                [
+                    danger_button("▶️ Play Now", callback_data=f"ctl_playnow:{song['vidid']}"),
+                    danger_button("Close", callback_data="ctl_close"),
+                ]
+            ]
+        )
+        await searching.delete()
+        await bot.send_message(chat_id, text, reply_markup=buttons)
         try:
             await message.delete()
         except Exception:
@@ -249,6 +287,98 @@ async def play_cmd(client, message: Message):
 @bot.on_message(filters.command("vplay"))
 async def vplay_cmd(client, message: Message):
     await _play_handler(client, message, video=True)
+
+
+@bot.on_callback_query(filters.regex("^ctl_"))
+async def control_buttons_cb(_, cq: CallbackQuery):
+    chat_id = cq.message.chat.id
+    action = cq.data.split("_", 1)[1]
+
+    if not await is_authorized(chat_id, cq.from_user.id):
+        return await cq.answer("❌ Only admins/authorized users can do this.", show_alert=True)
+
+    if action.startswith("playnow:"):
+        vidid = action.split(":", 1)[1]
+        moved = q.move_to_front(chat_id, vidid)
+        if not moved:
+            return await cq.answer("Song not found in queue.", show_alert=True)
+        await cq.answer("▶️ Playing now...")
+        try:
+            await cq.message.delete()
+        except Exception:
+            pass
+        await play_next(chat_id)
+
+    elif action == "pause":
+        if q.is_paused(chat_id):
+            await call_py.resume(chat_id)
+            q.set_paused(chat_id, False)
+            await cq.answer("▶️ Resumed.")
+            new_buttons = InlineKeyboardMarkup(
+                [
+                    [
+                        default_button("⏭", callback_data="ctl_skip"),
+                        default_button("⏹", callback_data="ctl_stop"),
+                        default_button("⏸", callback_data="ctl_pause"),
+                    ],
+                    [
+                        primary_button("➕", callback_data="ctl_queue"),
+                        danger_button("Close", callback_data="ctl_close"),
+                    ],
+                ]
+            )
+        else:
+            await call_py.pause(chat_id)
+            q.set_paused(chat_id, True)
+            await cq.answer("⏸ Paused.")
+            new_buttons = InlineKeyboardMarkup(
+                [
+                    [
+                        default_button("⏭", callback_data="ctl_skip"),
+                        default_button("⏹", callback_data="ctl_stop"),
+                        default_button("▶️", callback_data="ctl_pause"),
+                    ],
+                    [
+                        primary_button("➕", callback_data="ctl_queue"),
+                        danger_button("Close", callback_data="ctl_close"),
+                    ],
+                ]
+            )
+        try:
+            await cq.message.edit_reply_markup(new_buttons)
+        except Exception:
+            pass
+
+    elif action == "skip":
+        await cq.answer("⏭ Skipped.")
+        await play_next(chat_id)
+
+    elif action == "stop":
+        q.clear_queue(chat_id)
+        try:
+            await call_py.leave_call(chat_id)
+        except Exception:
+            pass
+        await cq.answer("⏹ Stopped.")
+        try:
+            await cq.message.delete()
+        except Exception:
+            pass
+
+    elif action == "queue":
+        songs = q.get_queue(chat_id)
+        if not songs:
+            await cq.answer("Queue is empty.", show_alert=True)
+        else:
+            preview = "\n".join(f"{i}. {s['title']}" for i, s in enumerate(songs[:10], 1))
+            await cq.answer(preview, show_alert=True)
+
+    elif action == "close":
+        await cq.answer()
+        try:
+            await cq.message.delete()
+        except Exception:
+            pass
 
 
 @bot.on_message(filters.command("pause"))
@@ -364,6 +494,15 @@ async def id_cmd(_, message: Message):
     )
 
 
+@bot.on_message(filters.command("restart") & filters.user(config.OWNER_ID))
+async def restart_cmd(_, message: Message):
+    msg = await message.reply_text("🔄 Restarting bot...")
+    with open("/tmp/musicbot_restart.txt", "w") as f:
+        f.write(f"{msg.chat.id}\n{msg.id}")
+    await log(f"🔄 Bot restarting (triggered by owner)\nTime: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    os.execl(sys.executable, sys.executable, *sys.argv)
+
+
 @bot.on_message(filters.command("broadcast") & filters.user(config.OWNER_ID))
 async def broadcast_cmd(_, message: Message):
     if len(message.command) < 2 and not message.reply_to_message:
@@ -411,6 +550,18 @@ async def main():
     ASSISTANT_USERNAME = me.username
     await call_py.start()
     setup_vc_logger(bot, assistant, call_py)
+
+    restart_file = "/tmp/musicbot_restart.txt"
+    if os.path.exists(restart_file):
+        try:
+            with open(restart_file) as f:
+                chat_id_str, msg_id_str = f.read().strip().split("\n")
+            await bot.edit_message_text(int(chat_id_str), int(msg_id_str), "✅ Bot restarted successfully!")
+        except Exception as e:
+            print(f"[restart] Couldn't edit restart confirmation: {e}")
+        finally:
+            os.remove(restart_file)
+
     await log(f"✅ Bot start ho gaya!\nTime: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print("Bot started.")
     await asyncio.Event().wait()
@@ -419,4 +570,4 @@ async def main():
 if __name__ == "__main__":
     loop = asyncio.get_event_loop()
     loop.run_until_complete(main())
-
+    
