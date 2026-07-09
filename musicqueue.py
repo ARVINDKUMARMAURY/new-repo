@@ -39,6 +39,7 @@ def pop_next(chat_id: int):
 def clear_queue(chat_id: int):
     _QUEUES.pop(chat_id, None)
     _CURRENT.pop(chat_id, None)
+    _PAUSED.discard(chat_id)
 
 
 def shuffle_queue(chat_id: int) -> bool:
@@ -47,6 +48,19 @@ def shuffle_queue(chat_id: int) -> bool:
         return False
     random.shuffle(q)
     return True
+
+
+def move_to_front(chat_id: int, vidid: str) -> bool:
+    """Moves a queued song (by vidid) to the front so it plays next. Returns False if not found."""
+    songs = _QUEUES.get(chat_id)
+    if not songs:
+        return False
+    for i, s in enumerate(songs):
+        if s["vidid"] == vidid:
+            song = songs.pop(i)
+            songs.insert(0, song)
+            return True
+    return False
 
 
 def set_current(chat_id: int, song: dict):
@@ -64,3 +78,19 @@ def clear_current(chat_id: int):
 def is_active(chat_id: int) -> bool:
     """True if something is currently playing in this chat (VC busy)."""
     return chat_id in _CURRENT
+
+
+# ---------------- Paused state (for pause/resume toggle button) ----------------
+
+_PAUSED = set()
+
+
+def set_paused(chat_id: int, paused: bool):
+    if paused:
+        _PAUSED.add(chat_id)
+    else:
+        _PAUSED.discard(chat_id)
+
+
+def is_paused(chat_id: int) -> bool:
+    return chat_id in _PAUSED
