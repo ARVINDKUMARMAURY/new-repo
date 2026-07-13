@@ -18,7 +18,9 @@ import database as db
 import musicqueue as q
 from youtube import YouTube
 from vclogger import setup_vc_logger
-from button_styles import primary_button, success_button, danger_button, default_button
+from moderation import setup_moderation
+from button_styles import primary_button, success_button, danger_button
+from start_menu import send_dm_start, send_help, default_button
 
 # ===================== Clients =====================
 bot = Client(
@@ -195,6 +197,10 @@ async def welcome_cmd(_, message: Message):
 @bot.on_message(filters.command("start"))
 async def start_cmd(_, message: Message):
     await track_served(message)
+
+    if message.chat.type.name == "PRIVATE":
+        return await send_dm_start(_, message)
+
     buttons = InlineKeyboardMarkup(
         [
             [
@@ -204,17 +210,20 @@ async def start_cmd(_, message: Message):
         ]
     )
     await message.reply_text(
-        "Hi! I'm a simple music bot.\n\n"
-        "/play <song name> - play a song\n"
-        "/vplay <song name> - play a video\n"
-        "/pause /resume /skip /stop /end\n"
-        "/queue - view queue\n"
-        "/shuffle - shuffle the queue\n"
-        "/authuser - grant/revoke permission (reply to a user)\n"
-        "/id - get numeric ID (reply or @username)\n"
-        "/vclogger - toggle VC join/leave logging",
+        "Hi! I'm Avisha, a music bot. Use /help to see all commands.",
         reply_markup=buttons,
     )
+
+
+@bot.on_message(filters.command("help"))
+async def help_cmd(_, message: Message):
+    await send_help(_, message.chat.id)
+
+
+@bot.on_callback_query(filters.regex("^show_help$"))
+async def show_help_cb(_, cq: CallbackQuery):
+    await cq.answer()
+    await send_help(_, cq.message.chat.id)
 
 
 async def _play_handler(_, message: Message, video: bool):
@@ -596,6 +605,7 @@ async def main():
     ASSISTANT_USERNAME = me.username
     await call_py.start()
     setup_vc_logger(bot, assistant, call_py)
+    setup_moderation(bot)
 
     restart_file = "/tmp/musicbot_restart.txt"
     if os.path.exists(restart_file):
