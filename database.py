@@ -1,4 +1,5 @@
 from motor.motor_asyncio import AsyncIOMotorClient
+from pymongo import ReturnDocument
 from config import MONGO_URL
 
 _client = AsyncIOMotorClient(MONGO_URL)
@@ -69,3 +70,28 @@ async def set_vc_logger(chat_id: int, enabled: bool):
 async def is_vc_logger(chat_id: int) -> bool:
     doc = await chats_col.find_one({"chat_id": chat_id})
     return bool(doc and doc.get("vc_logger", False))
+
+
+# ---------------- Warns (moderation) ----------------
+
+warns_col = _db["warns"]
+
+
+async def add_warn(chat_id: int, user_id: int) -> int:
+    """Increments the warn count and returns the new count."""
+    result = await warns_col.find_one_and_update(
+        {"chat_id": chat_id, "user_id": user_id},
+        {"$inc": {"count": 1}},
+        upsert=True,
+        return_document=ReturnDocument.AFTER,
+    )
+    return result["count"] if result else 1
+
+
+async def get_warns(chat_id: int, user_id: int) -> int:
+    doc = await warns_col.find_one({"chat_id": chat_id, "user_id": user_id})
+    return doc["count"] if doc else 0
+
+
+async def reset_warns(chat_id: int, user_id: int):
+    await warns_col.delete_one({"chat_id": chat_id, "user_id": user_id})
