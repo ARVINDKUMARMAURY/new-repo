@@ -1,7 +1,10 @@
 import asyncio
 import os
 import sys
+import time
 from datetime import datetime
+
+import psutil
 
 from pyrogram import Client, filters
 from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
@@ -36,6 +39,7 @@ call_py = PyTgCalls(assistant)
 
 ASSISTANT_ID = None  # set at startup after assistant.start()
 ASSISTANT_USERNAME = None  # set at startup after assistant.start()
+START_TIME = time.time()
 
 
 # ===================== Helpers =====================
@@ -128,7 +132,7 @@ async def start_playback(chat_id: int, song: dict):
     if not joined:
         return
 
-    local_path = await YouTube.download(song["vidid"], video=song["video"])
+    local_path = await YouTube.get_playable(song["vidid"], video=song["video"])
     if not local_path:
         await bot.send_message(chat_id, f"❌ Couldn't fetch '{song['title']}'. Try again later.")
         return await play_next(chat_id)
@@ -494,6 +498,44 @@ async def id_cmd(_, message: Message):
     )
 
 
+@bot.on_message(filters.command("status") & filters.user(config.OWNER_ID))
+async def status_cmd(_, message: Message):
+    process = psutil.Process(os.getpid())
+
+    cpu_percent = psutil.cpu_percent(interval=1)
+    ram = psutil.virtual_memory()
+    bot_ram_mb = process.memory_info().rss / 1024 / 1024
+
+    ffmpeg_count = sum(1 for p in psutil.process_iter(["name"]) if p.info["name"] and "ffmpeg" in p.info["name"].lower())
+
+    disk = psutil.disk_usage(config.STORAGE_DIR)
+    storage_used_gb = disk.used / 1024 / 1024 / 1024
+    storage_total_gb = disk.total / 1024 / 1024 / 1024
+
+    active_calls = len(getattr(call_py, "calls", {}) or {})
+
+    uptime_seconds = int(time.time() - START_TIME)
+    hours, remainder = divmod(uptime_seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+
+    thread_count = process.num_threads()
+    open_files = len(process.open_files())
+
+    text = (
+        "📊 **Bot Status**\n\n"
+        f"**Uptime:** {hours}h {minutes}m {seconds}s\n\n"
+        f"**System CPU:** {cpu_percent}%\n"
+        f"**System RAM:** {ram.percent}% ({ram.used / 1024 / 1024 / 1024:.1f}GB / {ram.total / 1024 / 1024 / 1024:.1f}GB)\n\n"
+        f"**Bot process RAM:** {bot_ram_mb:.1f} MB\n"
+        f"**Bot threads:** {thread_count}\n"
+        f"**Bot open files/sockets:** {open_files}\n\n"
+        f"**Active ffmpeg processes:** {ffmpeg_count}\n"
+        f"**Active VC calls:** {active_calls}\n\n"
+        f"**Storage:** {storage_used_gb:.1f}GB / {storage_total_gb:.1f}GB used"
+    )
+    await message.reply_text(text)
+
+
 @bot.on_message(filters.command("restart") & filters.user(config.OWNER_ID))
 async def restart_cmd(_, message: Message):
     msg = await message.reply_text("🔄 Restarting bot...")
@@ -570,4 +612,3 @@ async def main():
 if __name__ == "__main__":
     loop = asyncio.get_event_loop()
     loop.run_until_complete(main())
-    
