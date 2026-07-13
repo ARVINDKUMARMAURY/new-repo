@@ -512,7 +512,11 @@ async def status_cmd(_, message: Message):
     storage_used_gb = disk.used / 1024 / 1024 / 1024
     storage_total_gb = disk.total / 1024 / 1024 / 1024
 
-    active_calls = len(getattr(call_py, "calls", {}) or {})
+    try:
+        calls_dict = await call_py.calls
+        active_calls = len(calls_dict or {})
+    except Exception:
+        active_calls = "N/A"
 
     uptime_seconds = int(time.time() - START_TIME)
     hours, remainder = divmod(uptime_seconds, 3600)
