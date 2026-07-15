@@ -1,6 +1,7 @@
 import os
 
-from pyrogram.types import InlineKeyboardMarkup, Message
+from pyrogram.types import InlineKeyboardMarkup, Message, MessageEntity
+from pyrogram.enums import MessageEntityType
 
 from button_styles import primary_button, success_button, danger_button
 
@@ -10,15 +11,39 @@ DEVELOPER_URL = "https://t.me/Avisha_Asstiant"
 SUPPORT_URL = "https://t.me/Avisha_101"
 SOURCE_URL = "https://t.me/Avisha_101"
 
+EMOJI_DIAMOND = "5188375125552033525"   # 💎
+EMOJI_HELP = "5190566778643702939"      # 📍
+EMOJI_DEV = "5190850877845433996"       # 🎁
+EMOJI_MUSIC = "5190849937247595090"     # 🎁
+
+
+def build_entities(text: str, emoji_map: dict):
+    """emoji_map: {emoji_char: custom_emoji_id}"""
+    entities = []
+    for emoji_char, emoji_id in emoji_map.items():
+        idx = text.find(emoji_char)
+        if idx != -1:
+            entities.append(
+                MessageEntity(
+                    type=MessageEntityType.CUSTOM_EMOJI,
+                    offset=idx,
+                    length=len(emoji_char),
+                    custom_emoji_id=emoji_id,
+                )
+            )
+    return entities
+
 
 async def send_dm_start(bot, message: Message):
     """Sends the photo-based welcome menu, used only in private chats (DM)."""
     caption = (
-        f"Hey {message.from_user.mention}, 🔥\n\n"
+        f"Hey {message.from_user.mention}, 💎\n\n"
         "This is **Avisha** !\n\n"
         "A music player bot with some awesome and useful features.\n\n"
         "Click on the help button for more info."
     )
+
+    entities = build_entities(caption, {"💎": EMOJI_DIAMOND})
 
     buttons = InlineKeyboardMarkup(
         [
@@ -33,13 +58,13 @@ async def send_dm_start(bot, message: Message):
     )
 
     if os.path.exists(BANNER_PATH):
-        await message.reply_photo(BANNER_PATH, caption=caption, reply_markup=buttons)
+        await message.reply_photo(BANNER_PATH, caption=caption, reply_markup=buttons, caption_entities=entities)
     else:
-        await message.reply_text(caption, reply_markup=buttons)
+        await message.reply_text(caption, reply_markup=buttons, entities=entities)
 
 
 HELP_TEXT = (
-    "🎵 **Avisha Commands**\n\n"
+    "🎁 **Avisha Commands**\n\n"
     "**Music**\n"
     "/play <song> - play a song\n"
     "/vplay <song> - play a video\n"
@@ -66,6 +91,8 @@ HELP_TEXT = (
 
 
 async def send_help(bot, chat_id: int):
+    entities = build_entities(HELP_TEXT, {"🎁": EMOJI_MUSIC})
+
     buttons = InlineKeyboardMarkup(
         [
             [
@@ -74,4 +101,4 @@ async def send_help(bot, chat_id: int):
             ]
         ]
     )
-    await bot.send_message(chat_id, HELP_TEXT, reply_markup=buttons)
+    await bot.send_message(chat_id, HELP_TEXT, reply_markup=buttons, entities=entities)
