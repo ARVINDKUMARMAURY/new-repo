@@ -16,7 +16,7 @@ LOG_GROUP_ID = -1004367650578
 
 # ===================== BabyAPI (song/video fetch source) =====================
 BASE_URL = "https://api.babiesiq.tech"
-API_KEY = "ADMINBABYX_BE1B36999F84D14C6DAF231FA4768710577EC9A1"
+API_KEY = "ADMINBABYX_63C6BB96432E3D6B2E217D29F695EBD6D93D4CFA"
 
 # ===================== Permanent NVMe Storage =====================
 STORAGE_DIR = "/root/vps_songs"
