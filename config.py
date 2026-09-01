@@ -1,26 +1,31 @@
 import os
+from dotenv import load_dotenv
 
-# ===================== Telegram =====================
-API_ID = 38381999
-API_HASH = "9b081fa7ad017251e51c95db194f8dda"
-BOT_TOKEN = "8927308242:AAFs89s88pB-KHkA_lD3TV4L0kyIvf2ebdc"
-SESSION_STRING = "BQJJqa8AvlrfwSEuj-Z7UaxiUg1kmUdKMnVKOnsNn17AdHC5O4-7kfzhUOUy-_zzLw2O43pf4GoZVy6toObyY7SwTot5HjZDUdriyv7FAMGP6OT0Dxy8TrUwhs9x3ORYEyNU4cVWeOXojH258lhcOV7QvDMKYGIDYSm8X6MqJp_1269kjJbi8LZWH80MA4N81Uwdf6Tz7687x8STuRXgAkT87CsOBuIAhLcUc9WafZdIYhB9nPCnuzK2Xvojp-lJ8BMySOhW4lFnX4NhOG5Fm6GO-rYCqW3GSXD1OyDtoUK24i0NWbRkhprZWJWEyukIvoRpZ10X7okX7wyuxP5MCePnar261gAAAAHSWzBIAA"
-OWNER_ID = 7824158792
+load_dotenv()
 
-# ===================== Database =====================
-MONGO_URL = "mongodb+srv://yb131567_db_user:R8zxuvc9Qn999Arg@cluster0.drjaxl8.mongodb.net/telegram_bot?retryWrites=true&w=majority"
-
-# ===================== Log Group =====================
-# Bot start + song play + error alerts sab yahan jaayenge
-LOG_GROUP_ID = -1004367650578
-
-# ===================== BabyAPI (song/video fetch source) =====================
-BASE_URL = "https://api.babiesiq.tech"
-API_KEY = "ADMINBABYX_63C6BB96432E3D6B2E217D29F695EBD6D93D4CFA"
-
-# ===================== Permanent NVMe Storage =====================
-STORAGE_DIR = "/root/vps_songs"
-
-# ===================== Limits =====================
-DURATION_LIMIT = 18000   # seconds, 5 hours
-QUEUE_LIMIT = 30         # max songs per chat queue
+class Config:
+    # Telegram Credentials
+    API_ID = int(os.getenv("API_ID", "39917988"))
+    API_HASH = os.getenv("API_HASH", "bd827dbeac6a55896ff11539bc80365b")
+    BOT_TOKEN = os.getenv("BOT_TOKEN", "8522799922:AAF3-8heGrCM7UZuSTm1ttmfLVDLAAlrDo8")
+    
+    # Admin Credentials
+    OWNER_ID = int(os.getenv("OWNER_ID", "7875184322"))
+    LOGGER_ID = int(os.getenv("LOGGER_ID", "-1003781924669"))
+    
+    # Storage
+    STORAGE_CHAT_ID = int(os.getenv("STORAGE_CHAT_ID", "-1003577577725"))
+    STRING_SESSION = os.getenv("STRING_SESSION", "")
+    
+    # API Configuration
+    API_KEY = os.getenv("API_KEY", "ADMINBABYX_63C6BB96432E3D6B2E217D29F695EBD6D93D4CFA")
+    BASE_URL = os.getenv("BASE_URL", "https://api.babiesiq.tech")
+    
+    # Bot Configuration
+    BOT_NAME = os.getenv("BOT_NAME", "MyBot")
+    DURATION_LIMIT = int(os.getenv("DURATION_LIMIT", "500"))
+    QUEUE_LIMIT = int(os.getenv("QUEUE_LIMIT", "100"))
+    
+    # Database
+    MONGO_DB_URI = os.getenv("MONGO_DB_URI", "mongodb://localhost:27017")
+    DATABASE_NAME = os.getenv("DATABASE_NAME", "bot_db")

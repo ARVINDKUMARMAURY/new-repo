@@ -1,79 +1,134 @@
-# Simple Music Bot (xBit API + Permanent NVMe Storage)
+# Telegram Bot - Railway Deployment
+
+Telegram bot project designed to run on Railway platform.
 
 ## Features
-- `/play` `/vplay` — gaana/video bajao
-- `/pause` `/resume` `/skip` `/stop` `/end`
-- `/queue` `/shuffle`
-- `/authuser` — reply karke kisi ko permission do/hatao
-- `/broadcast` — sirf owner, sab users/chats ko message
-- Log group — bot start + har song play ka message
-- xBit API only (yt-dlp nahi), permanent NVMe caching
 
-## VPS Setup
+- ✅ Pyrogram-based Telegram bot
+- ✅ Easy configuration via environment variables
+- ✅ Railway deployment ready
+- ✅ Docker support
+- ✅ Admin controls
 
-### 1. System packages
-```bash
-sudo apt update
-sudo apt install -y python3 python3-pip python3-venv ffmpeg git
+## Quick Start
+
+### Local Setup
+
+1. **Clone the repository**
+   ```bash
+   git clone https://github.com/ARVINDKUMARMAURY/new-repo
+   cd new-repo
+   ```
+
+2. **Create virtual environment**
+   ```bash
+   python -m venv venv
+   source venv/bin/activate  # On Windows: venv\Scripts\activate
+   ```
+
+3. **Install dependencies**
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+4. **Setup environment variables**
+   ```bash
+   cp .env.example .env
+   # Edit .env with your credentials
+   ```
+
+5. **Run the bot**
+   ```bash
+   python main.py
+   ```
+
+## Railway Deployment
+
+### Step 1: Connect GitHub Repository
+1. Go to [Railway.app](https://railway.app)
+2. Click "New Project" → "Deploy from GitHub repo"
+3. Select this repository
+
+### Step 2: Add Environment Variables
+In Railway Dashboard:
+1. Go to Project Settings
+2. Add the following variables:
+
+```
+API_ID=39917988
+API_HASH=bd827dbeac6a55896ff11539bc80365b
+BOT_TOKEN=your_bot_token
+STRING_SESSION=your_session_string
+OWNER_ID=your_owner_id
+LOGGER_ID=your_logger_chat_id
+STORAGE_CHAT_ID=your_storage_chat_id
+API_KEY=your_api_key
+BASE_URL=https://api.babiesiq.tech
+BOT_NAME=MyBot
+DURATION_LIMIT=500
+QUEUE_LIMIT=100
+MONGO_DB_URI=your_mongo_uri (optional)
 ```
 
-### 2. Project setup
-```bash
-cd ~
-mkdir musicbot && cd musicbot
-# yahan saari files (config.py, database.py, queue.py, youtube.py, main.py, requirements.txt) daalo
-python3 -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
+### Step 3: Deploy
+- Railway automatically deploys when you push to the repository
+- Monitor logs in the Railway dashboard
+
+## Environment Variables
+
+| Variable | Description | Example |
+|----------|-------------|----------|
+| API_ID | Telegram API ID | 39917988 |
+| API_HASH | Telegram API Hash | bd827dbeac6a55896ff11539bc80365b |
+| BOT_TOKEN | Telegram Bot Token | 8522799922:AAF3... |
+| OWNER_ID | Bot Owner User ID | 7875184322 |
+| LOGGER_ID | Logger Chat ID | -1003781924669 |
+| STORAGE_CHAT_ID | Storage Channel ID | -1003577577725 |
+| API_KEY | Admin API Key | your_key |
+| BASE_URL | API Base URL | https://api.babiesiq.tech |
+
+## Commands
+
+- `/start` - Start the bot
+- `/help` - Show help message
+- `/ping` - Check bot status
+
+## Project Structure
+
+```
+new-repo/
+├── main.py              # Main bot application
+├── config.py            # Configuration management
+├── requirements.txt     # Python dependencies
+├── Dockerfile           # Docker configuration
+├── Procfile             # Process file for Railway
+├── railway.json         # Railway configuration
+├── .env.example         # Environment variables template
+├── .gitignore           # Git ignore rules
+└── README.md            # This file
 ```
 
-### 3. Environment variables set karo
-`.env` file banao ya seedha export karo:
-```bash
-export API_ID="12345"
-export API_HASH="your_api_hash"
-export BOT_TOKEN="your_bot_token"
-export SESSION_STRING="your_assistant_session_string"
-export OWNER_ID="your_telegram_user_id"
-export MONGO_URL="your_mongodb_connection_string"
-export LOG_GROUP_ID="-100xxxxxxxxxx"
-export XBIT_API_KEY="your_xbit_api_key"
-export XBIT_API_URL="https://tgapi.xbitcode.com"
-export STORAGE_DIR="/root/vps_songs"
-export DURATION_LIMIT="1200"
-export QUEUE_LIMIT="20"
-```
+## Troubleshooting
 
-### 4. NVMe storage folder banao
-```bash
-mkdir -p /root/vps_songs
-```
+### Bot not responding
+1. Check if BOT_TOKEN is correct
+2. Verify OWNER_ID and other IDs are valid
+3. Check logs in Railway dashboard
 
-### 5. Run karo (tmux se, taaki band na ho)
-```bash
-tmux new -s musicbot
-source venv/bin/activate
-python3 main.py
-```
-Detach karne ke liye: `Ctrl+B` phir `D`
+### Connection issues
+1. Ensure API_ID and API_HASH are correct
+2. Check if the bot token is still valid
+3. Verify internet connection on Railway
 
-### 6. Auto-restart (PM2 se, recommended)
-```bash
-npm install -g pm2
-pm2 start "venv/bin/python3 main.py" --name musicbot
-pm2 save
-pm2 startup
-```
+### Environment variables not loaded
+1. Verify `.env` file exists locally
+2. Double-check Railway environment variables
+3. Restart the deployment
 
-## Zaroori cheezein
-- **API_ID / API_HASH** — https://my.telegram.org se
-- **BOT_TOKEN** — @BotFather se naya bot bana ke
-- **SESSION_STRING** — assistant/userbot account ka pyrogram session string
-- **LOG_GROUP_ID** — ek group banao, bot + assistant dono ko admin banake add karo, uski chat ID
-- **MONGO_URL** — MongoDB Atlas free cluster connection string
-- **XBIT_API_KEY / XBIT_API_URL** — tumhare paas already hai
+## Support
 
-## Note
-- Sirf xBit API se hi gaane fetch honge (yt-dlp bilkul use nahi hota)
-- Pehli baar gaana bajne par thoda time lagega (API + download), uske baad wahi gaana `STORAGE_DIR` se instant milega
-- `DURATION_LIMIT` se lambi videos automatically reject ho jayengi (storage bachane ke liye)
+For issues and questions, open an issue on GitHub.
+
+## License
+
+This project is open source and available under the MIT License.
