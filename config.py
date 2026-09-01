@@ -15,7 +15,6 @@ class Config:
     
     # Storage
     STORAGE_CHAT_ID = int(os.getenv("STORAGE_CHAT_ID", "-1003577577725"))
-    STRING_SESSION = os.getenv("STRING_SESSION", "")
     
     # API Configuration
     API_KEY = os.getenv("API_KEY", "ADMINBABYX_63C6BB96432E3D6B2E217D29F695EBD6D93D4CFA")
