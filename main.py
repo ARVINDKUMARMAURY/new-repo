@@ -1,4 +1,5 @@
 import logging
+import asyncio
 from pyrogram import Client, filters
 from pyrogram.types import Message
 from config import Config
@@ -45,10 +46,18 @@ async def ping_handler(client: Client, message: Message):
     await message.reply_text("🏓 Pong!")
     logger.info(f"Ping from user {message.from_user.id}")
 
-def main():
+async def main():
     """Start the bot"""
     logger.info("🤖 Bot is starting...")
-    bot.run()
+    try:
+        await bot.start()
+        logger.info("✅ Bot connected successfully!")
+        await bot.idle()
+    except Exception as e:
+        logger.error(f"❌ Error starting bot: {e}")
+        raise
+    finally:
+        await bot.stop()
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
