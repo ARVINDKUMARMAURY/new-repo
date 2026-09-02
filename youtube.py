@@ -191,8 +191,8 @@ class YouTubeAPI:
         tmp_path = local_path + ".part"
         try:
             print(f"[save] Starting download to {local_path}")
-            proc = await asyncio.create_subprocess_shell(
-                f'curl -L "{url}" -o "{tmp_path}" -s --max-time 120'
+            proc = await asyncio.create_subprocess_exec(
+                "curl", "-L", url, "-o", tmp_path, "-s", "--max-time", "120"
             )
             await proc.communicate()
 

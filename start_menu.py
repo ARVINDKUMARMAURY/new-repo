@@ -17,17 +17,26 @@ EMOJI_DEV = "5190850877845433996"       # 🎁
 EMOJI_MUSIC = "5190849937247595090"     # 🎁
 
 
+def _utf16_len(s: str) -> int:
+    return len(s.encode("utf-16-le")) // 2
+
+
 def build_entities(text: str, emoji_map: dict):
-    """emoji_map: {emoji_char: custom_emoji_id}"""
+    """emoji_map: {emoji_char: custom_emoji_id}.
+    Offsets/lengths must be in UTF-16 code units (Telegram's requirement),
+    not Python character count — astral emoji like 💎📍🎁 are 1 Python char
+    but 2 UTF-16 units, so len(emoji_char) here would be wrong."""
     entities = []
     for emoji_char, emoji_id in emoji_map.items():
         idx = text.find(emoji_char)
         if idx != -1:
+            offset = _utf16_len(text[:idx])
+            length = _utf16_len(emoji_char)
             entities.append(
                 MessageEntity(
                     type=MessageEntityType.CUSTOM_EMOJI,
-                    offset=idx,
-                    length=len(emoji_char),
+                    offset=offset,
+                    length=length,
                     custom_emoji_id=emoji_id,
                 )
             )
