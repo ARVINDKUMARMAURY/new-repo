@@ -19,8 +19,8 @@ import musicqueue as q
 from youtube import YouTube
 from vclogger import setup_vc_logger
 from moderation import setup_moderation
-from button_styles import primary_button, success_button, danger_button
-from start_menu import send_dm_start, send_help, default_button
+from button_styles import primary_button, success_button, danger_button, default_button
+from start_menu import send_dm_start, send_help
 
 # ===================== Clients =====================
 bot = Client(
