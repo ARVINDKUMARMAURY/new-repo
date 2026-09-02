@@ -24,3 +24,22 @@ STORAGE_DIR = os.getenv("STORAGE_DIR", "/root/vps_songs")
 # ===================== Limits =====================
 DURATION_LIMIT = int(os.getenv("DURATION_LIMIT", "18000"))   # seconds, 5 hours
 QUEUE_LIMIT = int(os.getenv("QUEUE_LIMIT", "30"))             # max songs per chat queue
+
+BOT_NAME = os.getenv("BOT_NAME", "Avisha")
+
+
+class Config:
+    """Same values as above, exposed as a class (some modules import it this way)."""
+    API_ID = API_ID
+    API_HASH = API_HASH
+    BOT_TOKEN = BOT_TOKEN
+    SESSION_STRING = SESSION_STRING
+    OWNER_ID = OWNER_ID
+    MONGO_URL = MONGO_URL
+    LOG_GROUP_ID = LOG_GROUP_ID
+    BASE_URL = BASE_URL
+    API_KEY = API_KEY
+    STORAGE_DIR = STORAGE_DIR
+    DURATION_LIMIT = DURATION_LIMIT
+    QUEUE_LIMIT = QUEUE_LIMIT
+    BOT_NAME = BOT_NAME
