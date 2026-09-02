@@ -1,7 +1,6 @@
 import asyncio
 import os
 import re
-import time
 from typing import Union
 
 import requests
@@ -30,29 +29,6 @@ def _clean(link: str) -> str:
     elif "&si=" in link:
         link = link.split("&si=")[0]
     return link
-
-
-def _wait_until_ready(stream_url: str, max_attempts: int) -> bool:
-    session = requests.Session()
-    try:
-        for attempt in range(max_attempts):
-            try:
-                r = session.get(stream_url, timeout=10, stream=True, allow_redirects=True)
-                r.close()
-                if r.status_code in (200, 206):
-                    return True
-                elif r.status_code in (204, 423, 404, 410):
-                    time.sleep(2)
-                    continue
-                elif r.status_code in (401, 403, 429):
-                    return False
-                else:
-                    return False
-            except requests.exceptions.RequestException:
-                time.sleep(2)
-        return False
-    finally:
-        session.close()
 
 
 class YouTubeAPI:
@@ -97,49 +73,72 @@ class YouTubeAPI:
         }
         return details, vidid
 
+    def _build_url(self, vidid: str, video: bool) -> str:
+        kind = "video" if video else "audio"
+        return f"{BASE_URL}/download?url={vidid}&type={kind}&api_key={API_KEY}"
+
+    def _ext(self, video: bool) -> str:
+        # Artistbots returns webm for audio, mp4 for video
+        return "mp4" if video else "webm"
+
+    async def _check_reachable(self, url: str) -> bool:
+        """Quick HEAD-style check (falls back to ranged GET) that the link is good."""
+        loop = asyncio.get_running_loop()
+
+        def _call():
+            try:
+                session = _session()
+                # Some Workers endpoints don't support HEAD, so do a tiny ranged GET.
+                headers = {"Range": "bytes=0-0"}
+                resp = session.get(url, timeout=20, headers=headers, stream=True)
+                ok = resp.status_code in (200, 206)
+                ct = resp.headers.get("content-type", "")
+                print(f"[Artistbots] check -> status={resp.status_code} content-type={ct}")
+                resp.close()
+                session.close()
+                if not ok:
+                    return False
+                if ct and "json" in ct.lower():
+                    # An error JSON came back instead of a media file
+                    return False
+                return True
+            except Exception as e:
+                print(f"[Artistbots] check EXCEPTION: {type(e).__name__}: {e}")
+                return False
+
+        return await loop.run_in_executor(None, _call)
+
     async def download(self, vidid: str, video: bool = False):
-        ext = "mp4" if video else "mp3"
-        local_path = os.path.join(STORAGE_DIR, f"{vidid}.{ext}")
+        local_path = os.path.join(STORAGE_DIR, f"{vidid}.{self._ext(video)}")
 
         if os.path.exists(local_path) and os.path.getsize(local_path) > 0:
             return local_path
 
-        for attempt in range(1, 3):
-            stream_url, kind_type = await self._baby_fetch(vidid, want_video=video)
-            if not stream_url:
-                return None
-
-            if kind_type == "live":
-                return stream_url
-
-            saved_path = await self._save_to_storage(stream_url, local_path)
-            if saved_path:
-                return saved_path
-
-        return None
+        url = self._build_url(vidid, video)
+        saved_path = await self._save_to_storage(url, local_path)
+        return saved_path
 
     async def get_playable(self, vidid: str, video: bool = False):
         """
         Returns something playable as fast as possible:
         - local cached file if it already exists (instant)
-        - otherwise the direct stream URL (playback starts as soon as it's
-          ready, without waiting for the full file to download), while a
-          background task saves it to STORAGE_DIR for next time.
+        - otherwise the direct Artistbots download URL (pytgcalls can stream
+          straight from an HTTP url), while a background task saves a local
+          copy to STORAGE_DIR for next time.
         """
-        ext = "mp4" if video else "mp3"
-        local_path = os.path.join(STORAGE_DIR, f"{vidid}.{ext}")
+        local_path = os.path.join(STORAGE_DIR, f"{vidid}.{self._ext(video)}")
 
         if os.path.exists(local_path) and os.path.getsize(local_path) > 0:
             return local_path
 
-        stream_url, kind_type = await self._baby_fetch(vidid, want_video=video)
-        if not stream_url:
+        url = self._build_url(vidid, video)
+        ok = await self._check_reachable(url)
+        if not ok:
+            print(f"[Artistbots] link not reachable/usable for {vidid}")
             return None
 
-        if kind_type != "live":
-            asyncio.create_task(self._cache_in_background(vidid, video))
-
-        return stream_url
+        asyncio.create_task(self._cache_in_background(vidid, video))
+        return url
 
     async def _cache_in_background(self, vidid: str, video: bool):
         try:
@@ -147,52 +146,12 @@ class YouTubeAPI:
         except Exception as e:
             print(f"[bg-cache] EXCEPTION for {vidid}: {type(e).__name__}: {e}")
 
-    async def _baby_fetch(self, vidid: str, want_video: bool = False):
-        """Returns (stream_url, type) or (None, None)."""
-        loop = asyncio.get_running_loop()
-        max_attempts = 90 if want_video else 60
-
-        def _call():
-            try:
-                kind = "video" if want_video else "song"
-                url = f"{BASE_URL}/api/{kind}?query={vidid}&download=true&api={API_KEY}"
-
-                session = _session()
-                resp = session.get(url, timeout=60)
-                print(f"[BabyAPI] GET {kind} {vidid} -> status={resp.status_code}")
-                data = resp.json()
-                print(f"[BabyAPI] response: {data}")
-                session.close()
-
-                stream = data.get("stream")
-                if not stream:
-                    print(f"[BabyAPI] no 'stream' field in response")
-                    return None, None
-
-                kind_type = data.get("type")
-
-                if kind_type == "live":
-                    return stream, kind_type
-
-                ready = _wait_until_ready(stream, max_attempts)
-                if not ready:
-                    print(f"[BabyAPI] stream never became ready for {vidid}")
-                    return None, None
-
-                return stream, kind_type
-
-            except Exception as e:
-                print(f"[BabyAPI] EXCEPTION for {vidid}: {type(e).__name__}: {e}")
-                return None, None
-
-        return await loop.run_in_executor(None, _call)
-
     async def _save_to_storage(self, url: str, local_path: str):
         tmp_path = local_path + ".part"
         try:
             print(f"[save] Starting download to {local_path}")
             proc = await asyncio.create_subprocess_exec(
-                "curl", "-L", url, "-o", tmp_path, "-s", "--max-time", "120"
+                "curl", "-L", url, "-o", tmp_path, "-s", "--max-time", "180"
             )
             await proc.communicate()
 
