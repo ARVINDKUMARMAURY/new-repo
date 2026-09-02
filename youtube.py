@@ -1,6 +1,7 @@
 import asyncio
 import os
 import re
+import sys
 import time
 from typing import Union
 
@@ -126,15 +127,21 @@ class YouTubeAPI:
           ready, without waiting for the full file to download), while a
           background task saves it to STORAGE_DIR for next time.
         """
+        print(f"[get_playable] Called for vidid={vidid} video={video}", flush=True)
         ext = "mp4" if video else "mp3"
         local_path = os.path.join(STORAGE_DIR, f"{vidid}.{ext}")
 
         if os.path.exists(local_path) and os.path.getsize(local_path) > 0:
+            print(f"[get_playable] Found cached file: {local_path}", flush=True)
             return local_path
 
+        print(f"[get_playable] No cache found, fetching from BabyAPI for {vidid}", flush=True)
         stream_url, kind_type = await self._baby_fetch(vidid, want_video=video)
         if not stream_url:
+            print(f"[get_playable] No stream_url returned for {vidid}", flush=True)
             return None
+
+        print(f"[get_playable] Got stream_url for {vidid}, kind_type={kind_type}", flush=True)
 
         if kind_type != "live":
             asyncio.create_task(self._cache_in_background(vidid, video))
@@ -143,12 +150,15 @@ class YouTubeAPI:
 
     async def _cache_in_background(self, vidid: str, video: bool):
         try:
+            print(f"[bg-cache] Starting background cache for {vidid}", flush=True)
             await self.download(vidid, video=video)
+            print(f"[bg-cache] Finished background cache for {vidid}", flush=True)
         except Exception as e:
-            print(f"[bg-cache] EXCEPTION for {vidid}: {type(e).__name__}: {e}")
+            print(f"[bg-cache] EXCEPTION for {vidid}: {type(e).__name__}: {e}", flush=True)
 
     async def _baby_fetch(self, vidid: str, want_video: bool = False):
         """Returns (stream_url, type) or (None, None)."""
+        print(f"[BabyAPI] _baby_fetch called for vidid={vidid} want_video={want_video}", flush=True)
         loop = asyncio.get_running_loop()
         max_attempts = 90 if want_video else 60
 
@@ -156,33 +166,37 @@ class YouTubeAPI:
             try:
                 kind = "video" if want_video else "song"
                 url = f"{BASE_URL}/api/{kind}?query={vidid}&download=true&api={API_KEY}"
+                print(f"[BabyAPI] Calling {url}", flush=True)
 
                 session = _session()
                 resp = session.get(url, timeout=60)
-                print(f"[BabyAPI] GET {kind} {vidid} -> status={resp.status_code}")
+                print(f"[BabyAPI] GET {kind} {vidid} -> status={resp.status_code}", flush=True)
                 data = resp.json()
-                print(f"[BabyAPI] response: {data}")
+                print(f"[BabyAPI] response: {data}", flush=True)
                 session.close()
 
                 stream = data.get("stream")
                 if not stream:
-                    print(f"[BabyAPI] no 'stream' field in response")
+                    print(f"[BabyAPI] no 'stream' field in response", flush=True)
                     return None, None
 
                 kind_type = data.get("type")
+                print(f"[BabyAPI] stream received, type={kind_type}", flush=True)
 
                 if kind_type == "live":
                     return stream, kind_type
 
+                print(f"[BabyAPI] Waiting until stream is ready for {vidid}...", flush=True)
                 ready = _wait_until_ready(stream, max_attempts)
                 if not ready:
-                    print(f"[BabyAPI] stream never became ready for {vidid}")
+                    print(f"[BabyAPI] stream never became ready for {vidid}", flush=True)
                     return None, None
 
+                print(f"[BabyAPI] stream ready for {vidid}", flush=True)
                 return stream, kind_type
 
             except Exception as e:
-                print(f"[BabyAPI] EXCEPTION for {vidid}: {type(e).__name__}: {e}")
+                print(f"[BabyAPI] EXCEPTION for {vidid}: {type(e).__name__}: {e}", flush=True)
                 return None, None
 
         return await loop.run_in_executor(None, _call)
@@ -190,24 +204,24 @@ class YouTubeAPI:
     async def _save_to_storage(self, url: str, local_path: str):
         tmp_path = local_path + ".part"
         try:
-            print(f"[save] Starting download to {local_path}")
+            print(f"[save] Starting download to {local_path}", flush=True)
             proc = await asyncio.create_subprocess_exec(
                 "curl", "-L", url, "-o", tmp_path, "-s", "--max-time", "120"
             )
             await proc.communicate()
 
             if not os.path.exists(tmp_path) or os.path.getsize(tmp_path) < 50_000:
-                print(f"[save] Download too small or missing for {local_path}")
+                print(f"[save] Download too small or missing for {local_path}", flush=True)
                 if os.path.exists(tmp_path):
                     os.remove(tmp_path)
                 return None
 
             os.rename(tmp_path, local_path)
-            print(f"[save] Done: {local_path}")
+            print(f"[save] Done: {local_path}", flush=True)
             return local_path
 
         except Exception as e:
-            print(f"[save] EXCEPTION saving {local_path}: {type(e).__name__}: {e}")
+            print(f"[save] EXCEPTION saving {local_path}: {type(e).__name__}: {e}", flush=True)
             if os.path.exists(tmp_path):
                 os.remove(tmp_path)
             return None

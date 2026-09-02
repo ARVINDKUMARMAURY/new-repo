@@ -130,16 +130,26 @@ async def ensure_assistant_in_chat(chat_id: int) -> bool:
 
 async def start_playback(chat_id: int, song: dict):
     """Downloads (or fetches from cache) and starts streaming a song."""
+    print(f"[start_playback] Called for chat_id={chat_id} title={song.get('title')}", flush=True)
+
+    print(f"[start_playback] Ensuring assistant is in chat {chat_id}...", flush=True)
     joined = await ensure_assistant_in_chat(chat_id)
+    print(f"[start_playback] ensure_assistant_in_chat returned joined={joined}", flush=True)
     if not joined:
+        print(f"[start_playback] Assistant not in chat {chat_id}, aborting playback.", flush=True)
         return
 
+    print(f"[start_playback] Calling YouTube.get_playable for vidid={song['vidid']} video={song['video']}", flush=True)
     local_path = await YouTube.get_playable(song["vidid"], video=song["video"])
+    print(f"[start_playback] YouTube.get_playable returned: {local_path}", flush=True)
     if not local_path:
+        print(f"[start_playback] No playable stream/file for '{song['title']}', skipping to next.", flush=True)
         await bot.send_message(chat_id, f"❌ Couldn't fetch '{song['title']}'. Try again later.")
         return await play_next(chat_id)
 
+    print(f"[start_playback] Calling call_py.play for chat_id={chat_id} with {local_path}", flush=True)
     await call_py.play(chat_id, MediaStream(local_path))
+    print(f"[start_playback] call_py.play completed for chat_id={chat_id}", flush=True)
     q.set_current(chat_id, song)
     q.set_paused(chat_id, False)
 
@@ -170,19 +180,24 @@ async def start_playback(chat_id: int, song: dict):
 
 
 async def play_next(chat_id: int):
+    print(f"[play_next] Called for chat_id={chat_id}", flush=True)
     next_song = q.pop_next(chat_id)
     if next_song:
+        print(f"[play_next] Next song found for chat_id={chat_id}: {next_song.get('title')}", flush=True)
         await start_playback(chat_id, next_song)
     else:
+        print(f"[play_next] Queue empty for chat_id={chat_id}, leaving call.", flush=True)
         q.clear_current(chat_id)
         try:
             await call_py.leave_call(chat_id)
-        except Exception:
+        except Exception as e:
+            print(f"[play_next] EXCEPTION while leaving call for chat_id={chat_id}: {type(e).__name__}: {e}", flush=True)
             pass
 
 
 @call_py.on_update(call_filters.stream_end())
 async def stream_end_handler(_, update):
+    print(f"[stream_end_handler] Stream ended for chat_id={update.chat_id}", flush=True)
     await play_next(update.chat_id)
 
 
@@ -234,10 +249,13 @@ async def _play_handler(_, message: Message, video: bool):
         return await message.reply_text("Give me a song name or link. Example: `/play tum hi ho`")
 
     query = message.text.split(None, 1)[1]
+    print(f"[_play_handler] Search requested by {message.from_user.id} in chat {chat_id}: '{query}'", flush=True)
     searching = await message.reply_text("🔎 Searching...")
 
     details, vidid = await YouTube.track(query, videoid=False)
+    print(f"[_play_handler] YouTube.track completed for '{query}': vidid={vidid}", flush=True)
     if not vidid:
+        print(f"[_play_handler] No results found for '{query}'", flush=True)
         return await searching.edit_text("❌ Nothing found for that.")
 
     if details["duration_sec"] and details["duration_sec"] > config.DURATION_LIMIT:
@@ -598,14 +616,27 @@ async def broadcast_cmd(_, message: Message):
 
 async def main():
     global ASSISTANT_ID, ASSISTANT_USERNAME
+    print("[main] Starting bot client...", flush=True)
     await bot.start()
+    print("[main] Bot client started.", flush=True)
+
+    print("[main] Starting assistant client...", flush=True)
     await assistant.start()
+    print("[main] Assistant client started.", flush=True)
+
     me = await assistant.get_me()
     ASSISTANT_ID = me.id
     ASSISTANT_USERNAME = me.username
+    print(f"[main] Assistant identity resolved: id={ASSISTANT_ID} username={ASSISTANT_USERNAME}", flush=True)
+
+    print("[main] Starting PyTgCalls...", flush=True)
     await call_py.start()
+    print("[main] PyTgCalls started.", flush=True)
+
     setup_vc_logger(bot, assistant, call_py)
+    print("[main] VC logger set up.", flush=True)
     setup_moderation(bot)
+    print("[main] Moderation set up.", flush=True)
 
     restart_file = "/tmp/musicbot_restart.txt"
     if os.path.exists(restart_file):
@@ -614,12 +645,12 @@ async def main():
                 chat_id_str, msg_id_str = f.read().strip().split("\n")
             await bot.edit_message_text(int(chat_id_str), int(msg_id_str), "✅ Bot restarted successfully!")
         except Exception as e:
-            print(f"[restart] Couldn't edit restart confirmation: {e}")
+            print(f"[restart] Couldn't edit restart confirmation: {e}", flush=True)
         finally:
             os.remove(restart_file)
 
     await log(f"✅ Bot start ho gaya!\nTime: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    print("Bot started.")
+    print("Bot started.", flush=True)
     await asyncio.Event().wait()
 
 
