@@ -152,19 +152,62 @@ class YouTubeAPI:
 
         return saved_path
 
+    def _looks_like_valid_media(self, path: str) -> bool:
+        """Sniff the file's magic bytes to make sure curl actually saved real
+        media and not an HTML/JSON error page (which can still be >50KB and
+        would otherwise slip past a size-only check, leading to a confusing
+        ffprobe/JSONDecodeError crash later)."""
+        try:
+            with open(path, "rb") as f:
+                head = f.read(64)
+        except Exception:
+            return False
+
+        # Common webm/mkv (EBML) header
+        if head.startswith(b"\x1a\x45\xdf\xa3"):
+            return True
+        # Common mp4/mov 'ftyp' box (signature sits at bytes 4-8)
+        if len(head) >= 8 and head[4:8] == b"ftyp":
+            return True
+        # Anything starting with '<' or '{' is almost certainly an
+        # HTML or JSON error page, not media.
+        stripped = head.lstrip()
+        if stripped[:1] in (b"<", b"{"):
+            return False
+        # Unknown but not obviously text -> allow it through; better to let
+        # ffprobe be the final judge than to reject valid-but-unusual files.
+        return True
+
     async def _save_to_storage(self, url: str, local_path: str):
         tmp_path = local_path + ".part"
         try:
             print(f"[save] Starting download to {local_path}")
             proc = await asyncio.create_subprocess_exec(
-                "curl", "-L", url, "-o", tmp_path, "-s", "--max-time", "180"
+                "curl", "-L", url, "-o", tmp_path, "-s",
+                "-w", "%{http_code} %{content_type}\n",
+                "--max-time", "180",
+                stdout=asyncio.subprocess.PIPE,
             )
-            await proc.communicate()
+            stdout, _ = await proc.communicate()
+            curl_info = stdout.decode("utf-8", errors="replace").strip()
+            print(f"[save] curl result for {local_path}: {curl_info}")
 
             if not os.path.exists(tmp_path) or os.path.getsize(tmp_path) < 50_000:
                 print(f"[save] Download too small or missing for {local_path}")
                 if os.path.exists(tmp_path):
                     os.remove(tmp_path)
+                return None
+
+            if not self._looks_like_valid_media(tmp_path):
+                # Log a snippet so we can see *what* actually came back
+                # (e.g. an API error message) instead of guessing.
+                try:
+                    with open(tmp_path, "rb") as f:
+                        snippet = f.read(300)
+                    print(f"[save] Rejected non-media content for {local_path}: {snippet!r}")
+                except Exception:
+                    pass
+                os.remove(tmp_path)
                 return None
 
             os.rename(tmp_path, local_path)
