@@ -178,6 +178,35 @@ class YouTubeAPI:
         # ffprobe be the final judge than to reject valid-but-unusual files.
         return True
 
+    async def _debug_ffprobe(self, local_path: str):
+        """Runs the exact same ffprobe command pytgcalls uses internally on
+        the freshly-downloaded file, and prints its full stdout/stderr/return
+        code to the logs. This tells us precisely why ffprobe is failing on
+        this file, without needing manual `heroku run bash` access."""
+        cmd = [
+            "ffprobe",
+            "-v", "error",
+            "-show_entries", "stream=width,height,codec_type,codec_name",
+            "-show_format",
+            "-of", "json",
+            "-i", local_path,
+        ]
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=20)
+            print(f"[ffprobe-debug] cmd: {' '.join(cmd)}")
+            print(f"[ffprobe-debug] returncode: {proc.returncode}")
+            print(f"[ffprobe-debug] stdout ({len(stdout)} bytes): {stdout[:1000]!r}")
+            print(f"[ffprobe-debug] stderr ({len(stderr)} bytes): {stderr[:1000]!r}")
+            file_size = os.path.getsize(local_path) if os.path.exists(local_path) else -1
+            print(f"[ffprobe-debug] file size on disk: {file_size} bytes")
+        except Exception as e:
+            print(f"[ffprobe-debug] EXCEPTION running ffprobe: {type(e).__name__}: {e}")
+
     async def _save_to_storage(self, url: str, local_path: str):
         tmp_path = local_path + ".part"
         try:
@@ -212,6 +241,13 @@ class YouTubeAPI:
 
             os.rename(tmp_path, local_path)
             print(f"[save] Done: {local_path}")
+
+            # Temporary diagnostic: run ffprobe right now and log its raw
+            # output so we can see exactly why pytgcalls' own ffprobe check
+            # is failing on this file. Safe to remove once the root cause
+            # is confirmed and fixed.
+            await self._debug_ffprobe(local_path)
+
             return local_path
 
         except Exception as e:
