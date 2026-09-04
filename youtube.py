@@ -120,11 +120,16 @@ class YouTubeAPI:
 
     async def get_playable(self, vidid: str, video: bool = False):
         """
-        Returns something playable as fast as possible:
-        - local cached file if it already exists (instant)
-        - otherwise the direct Artistbots download URL (pytgcalls can stream
-          straight from an HTTP url), while a background task saves a local
-          copy to STORAGE_DIR for next time.
+        Returns a LOCAL file path that is guaranteed to be fully downloaded
+        before it's handed to pytgcalls. This avoids ffprobe being pointed
+        at a remote URL that isn't fully readable, or a partially-downloaded
+        file, both of which cause 'ffprobe not installed' / JSON decode
+        crashes in pytgcalls.
+
+        - If the file is already cached locally, returns it instantly.
+        - Otherwise, downloads it fully (via curl) and only then returns
+          the local path. This is a bit slower on cache-miss than the old
+          "stream from URL immediately" approach, but it's reliable.
         """
         local_path = os.path.join(STORAGE_DIR, f"{vidid}.{self._ext(video)}")
 
@@ -137,14 +142,15 @@ class YouTubeAPI:
             print(f"[Artistbots] link not reachable/usable for {vidid}")
             return None
 
-        asyncio.create_task(self._cache_in_background(vidid, video))
-        return url
+        # Wait for the FULL download to finish before returning anything.
+        # This is the key fix: no more asyncio.create_task() fire-and-forget
+        # background caching while returning a possibly-unprobable URL.
+        saved_path = await self._save_to_storage(url, local_path)
+        if not saved_path:
+            print(f"[Artistbots] download failed for {vidid}")
+            return None
 
-    async def _cache_in_background(self, vidid: str, video: bool):
-        try:
-            await self.download(vidid, video=video)
-        except Exception as e:
-            print(f"[bg-cache] EXCEPTION for {vidid}: {type(e).__name__}: {e}")
+        return saved_path
 
     async def _save_to_storage(self, url: str, local_path: str):
         tmp_path = local_path + ".part"
